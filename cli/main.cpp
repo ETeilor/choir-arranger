@@ -1,0 +1,60 @@
+// Command-line front end of the engine: same options as the Python prototype.
+//   choir_cli in.mid out.mid [--style=bach|obikhod|gregorian] [--complexity=4|S0,A5,T5,B7]
+//             [--octavists] [--texture=unison|organum4|organum5] [--outofmode=substitute|skip]
+//             [--mixed] [--dump]
+#include <cstring>
+#include <iostream>
+#include "../core/ChoirEngine.h"
+
+using namespace choir;
+
+int main(int argc, char** argv) {
+    std::vector<std::string> pos;
+    std::string style = "bach", cx, texture = "unison", policy = "substitute";
+    bool octav = false, mixed = false, dump = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto val = [&](const char* k) { return a.substr(std::strlen(k)); };
+        if (a.rfind("--style=", 0) == 0) style = val("--style=");
+        else if (a.rfind("--complexity=", 0) == 0) cx = val("--complexity=");
+        else if (a.rfind("--texture=", 0) == 0) texture = val("--texture=");
+        else if (a.rfind("--outofmode=", 0) == 0) policy = val("--outofmode=");
+        else if (a == "--octavists") octav = true;
+        else if (a == "--mixed") mixed = true;
+        else if (a == "--dump") dump = true;
+        else pos.push_back(a);
+    }
+    if (pos.empty()) {
+        std::cerr << "usage: choir_cli in.mid [out.mid] [options]\n";
+        return 2;
+    }
+    Style st = style == "obikhod" ? Style::Obikhod : style == "gregorian" ? Style::Gregorian : Style::Bach;
+    Settings s = Settings::fromSpec(st, cx);
+    s.octavists = octav;
+    s.mixed = mixed;
+    s.texture = texture == "organum4" ? Texture::Organum4 : texture == "organum5" ? Texture::Organum5 : Texture::Unison;
+    s.outOfMode = policy == "skip" ? OutOfMode::Skip : OutOfMode::Substitute;
+    std::vector<Note> notes;
+    Meta meta;
+    std::string err;
+    if (!readSmf(pos[0], notes, meta, err)) {
+        std::cerr << err << "\n";
+        return 1;
+    }
+    Result r = arrange(notes, meta, s);
+    if (!r.ok()) {
+        std::cerr << r.report() << "\n";
+        return 1;
+    }
+    if (pos.size() > 1) writeSmfFile(pos[1], r.parts, meta);
+    if (dump) {
+        std::cout << "ISSUES " << r.issues.size() << "\n";
+        for (auto& p : r.parts) {
+            std::cout << "TRACK " << p.name << " " << p.notes.size() << "\n";
+            for (auto& n : p.notes) std::cout << n.start << " " << n.end << " " << n.pitch << "\n";
+        }
+    } else {
+        std::cout << r.report() << "\n";
+    }
+    return 0;
+}

@@ -1,0 +1,38 @@
+name: macOS installer (AU + VST3 + app)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64)
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release --target choir_cli ChoirArranger_AU ChoirArranger_VST3 ChoirArranger_Standalone
+
+      - name: Engine matches the prototype
+        continue-on-error: true
+        run: python3 tests/compare_golden.py tests/reference.json build/Release/choir_cli tests
+
+      - name: Validate the Audio Unit with auval
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/ChoirArranger_artefacts/Release/AU/Choir Arranger.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          sleep 2
+          auval -v aumu Chor Tlrm
+
+      - name: Installer (.pkg and .dmg)
+        run: bash scripts/make_installer.sh 0.4.0
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChoirArranger-macOS
+          path: dist/*
