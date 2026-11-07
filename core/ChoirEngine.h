@@ -52,6 +52,9 @@ enum class Style { Bach, Obikhod, Gregorian, Znamenny, Byzantine, Renaissance, C
                    Partes, Spiritual, Anglican, SacredHarp, Bulgarian, Georgian, Tintinnabuli, CloseHarmony,
                    AcappellaPop, Tenore };
 enum class Texture { Unison, Organum4, Organum5 };
+// choir make-up; voice-leading styles follow it, styles with a fixed ensemble keep their own
+enum class Choir { SATB, SSAA, TTBB, SAB, SSA };
+enum class InputMode { Auto, Chords, HarmonizeMelody };
 enum class OutOfMode { Substitute, Skip };
 
 struct Settings {
@@ -63,6 +66,11 @@ struct Settings {
     Texture texture = Texture::Unison;    // gregorian
     OutOfMode outOfMode = OutOfMode::Substitute;
     bool mixed = false;                   // gregorian: add soprano and alto an octave up
+    Choir choir = Choir::SATB;
+    bool amateur = false;                 // narrower, safer ranges for an amateur choir
+    InputMode input = InputMode::Auto;    // Auto harmonizes a bare melody
+    int variant = 0;                      // 0 = the default arrangement, 1.. = alternatives
+    std::map<std::string, std::vector<Note>> locks;   // part name -> notes kept as they are
 
     static Settings fromSpec(Style st, const std::string& complexitySpec);
 };
@@ -87,12 +95,35 @@ struct Result {
     int keyFifths = 99;                  // key signature for notation: -7..7 (99 = not set yet)
     bool keyMinor = false;
     std::vector<Issue> issues;
+    bool harmonized = false;             // the chords were chosen by the plug-in
+    std::vector<std::string> locked;     // parts kept from the lock
     std::string error;
     bool ok() const { return error.empty(); }
     std::string report() const;
 };
 
 Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings& s);
+
+// ---------------------------------------------------------------- live voicing (MIDI FX)
+// Voices the chord being held right now, as smoothly as possible from the previous one. No look-ahead,
+// so no ornaments: the live mode is for sketching, the arranger for the final parts.
+struct LiveVoicing {
+    std::vector<std::string> names;   // sung parts, top to bottom
+    std::vector<int> pitches;         // same order; empty when nothing is held
+    std::string chord;                // recognized chord name
+};
+
+class LiveVoicer {
+public:
+    void reset() { havePrev_ = false; }
+    LiveVoicing voice(const std::vector<int>& held, const Settings& s, bool topIsMelody);
+
+private:
+    std::array<int, 4> prev_{};
+    int prevRoot_ = 0;
+    std::string prevQuality_;
+    bool havePrev_ = false;
+};
 
 // ---------------------------------------------------------------- notation
 // MusicXML (opens in MuseScore, Sibelius, Dorico, Finale): one staff per part, clefs by voice,

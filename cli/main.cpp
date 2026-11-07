@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include "../core/ChoirEngine.h"
 
 using namespace choir;
@@ -15,7 +16,9 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     std::string style = "bach", cx, texture = "unison", policy = "substitute";
     bool octav = false, mixed = false, dump = false;
-    std::string xml;
+    std::string xml, choirS = "satb", input = "auto";
+    int variant = 0;
+    bool amateur = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto val = [&](const char* k) { return a.substr(std::strlen(k)); };
@@ -27,7 +30,44 @@ int main(int argc, char** argv) {
         else if (a == "--mixed") mixed = true;
         else if (a == "--dump") dump = true;
         else if (a.rfind("--xml=", 0) == 0) xml = val("--xml=");
+        else if (a.rfind("--choir=", 0) == 0) choirS = val("--choir=");
+        else if (a.rfind("--input=", 0) == 0) input = val("--input=");
+        else if (a.rfind("--variant=", 0) == 0) variant = std::stoi(val("--variant="));
+        else if (a == "--amateur") amateur = true;
         else pos.push_back(a);
+    }
+    // --live=60,64,67;62,65,69,71;... voices a sequence of held chords like the MIDI FX does
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a.rfind("--live=", 0) != 0) continue;
+        Settings ls = Settings::fromSpec(Style::Bach, "4");
+        for (int j = 1; j < argc; ++j) {
+            std::string b = argv[j];
+            if (b.rfind("--style=", 0) == 0) {
+                const char* names[] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
+                                       "contemporary", "gospel", "barbershop", "epic", "partes", "spiritual",
+                                       "anglican", "sacredharp", "bulgarian", "georgian", "tintinnabuli",
+                                       "closeharmony", "apop", "tenore"};
+                for (int k = 0; k < 20; ++k)
+                    if (b.substr(8) == names[k]) ls.style = (Style)k;
+            }
+            if (b == "--choir=sab") ls.choir = Choir::SAB;
+            if (b == "--choir=ttbb") ls.choir = Choir::TTBB;
+        }
+        LiveVoicer lv;
+        std::stringstream ss(a.substr(7));
+        std::string chord;
+        while (std::getline(ss, chord, ';')) {
+            std::vector<int> held;
+            std::stringstream cs(chord);
+            std::string x;
+            while (std::getline(cs, x, ',')) held.push_back(std::stoi(x));
+            auto r = lv.voice(held, ls, true);
+            std::cout << r.chord << ":";
+            for (size_t k = 0; k < r.pitches.size(); ++k) std::cout << " " << r.names[k] << "=" << r.pitches[k];
+            std::cout << "\n";
+        }
+        return 0;
     }
     if (pos.empty()) {
         std::cerr << "usage: choir_cli in.mid [out.mid] [options]\n";
@@ -51,6 +91,12 @@ int main(int argc, char** argv) {
     s.mixed = mixed;
     s.texture = texture == "organum4" ? Texture::Organum4 : texture == "organum5" ? Texture::Organum5 : Texture::Unison;
     s.outOfMode = policy == "skip" ? OutOfMode::Skip : OutOfMode::Substitute;
+    const std::map<std::string, Choir> choirs = {{"satb", Choir::SATB}, {"ssaa", Choir::SSAA}, {"ttbb", Choir::TTBB},
+                                                 {"sab", Choir::SAB}, {"ssa", Choir::SSA}};
+    if (choirs.count(choirS)) s.choir = choirs.at(choirS);
+    s.amateur = amateur;
+    s.variant = variant;
+    s.input = input == "chords" ? InputMode::Chords : input == "harmonize" ? InputMode::HarmonizeMelody : InputMode::Auto;
     std::vector<Note> notes;
     Meta meta;
     std::string err;

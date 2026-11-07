@@ -1,61 +1,5 @@
 #include "PluginEditor.h"
 
-// ---------------------------------------------------------------- look
-ChoirLook::ChoirLook() {
-    setColour(juce::ResizableWindow::backgroundColourId, ui::bg);
-    setColour(juce::ComboBox::backgroundColourId, ui::panelHi);
-    setColour(juce::ComboBox::outlineColourId, ui::line);
-    setColour(juce::ComboBox::textColourId, ui::text);
-    setColour(juce::ComboBox::arrowColourId, ui::textDim);
-    setColour(juce::PopupMenu::backgroundColourId, ui::panelHi);
-    setColour(juce::PopupMenu::textColourId, ui::text);
-    setColour(juce::PopupMenu::highlightedBackgroundColourId, ui::accent.withAlpha(0.25f));
-    setColour(juce::PopupMenu::highlightedTextColourId, ui::text);
-    setColour(juce::Label::textColourId, ui::text);
-    setColour(juce::TextButton::textColourOffId, ui::text);
-    setColour(juce::TextButton::textColourOnId, ui::bg);
-    setColour(juce::ToggleButton::textColourId, ui::text);
-    setColour(juce::ToggleButton::tickColourId, ui::accent);
-    setColour(juce::ToggleButton::tickDisabledColourId, ui::textDim);
-    setColour(juce::Slider::textBoxTextColourId, ui::text);
-    setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-}
-
-void ChoirLook::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1,
-                                 juce::Slider& s) {
-    auto b = juce::Rectangle<int>(x, y, w, h).toFloat().reduced(4.0f);
-    float r = std::min(b.getWidth(), b.getHeight()) / 2.0f;
-    auto c = b.getCentre();
-    float lw = r > 30 ? 5.0f : 3.5f;
-    juce::Path track, val;
-    track.addCentredArc(c.x, c.y, r - lw, r - lw, 0, a0, a1, true);
-    g.setColour(ui::line);
-    g.strokePath(track, juce::PathStrokeType(lw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    bool automatic = s.getMinimum() < 0 && s.getValue() < 0;
-    if (!automatic) {
-        float a = a0 + pos * (a1 - a0);
-        val.addCentredArc(c.x, c.y, r - lw, r - lw, 0, a0, a, true);
-        auto col = s.getProperties().contains("colour") ? juce::Colour((juce::uint32)(juce::int64)s.getProperties()["colour"]) : ui::accent;
-        g.setColour(col);
-        g.strokePath(val, juce::PathStrokeType(lw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
-    g.setColour(automatic ? ui::textDim : ui::text);
-    g.setFont(juce::FontOptions(r > 30 ? 26.0f : 13.0f, r > 30 ? juce::Font::bold : juce::Font::plain));
-    g.drawText(automatic ? juce::String("=") : juce::String((int)s.getValue()), b, juce::Justification::centred);
-}
-
-void ChoirLook::drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour&, bool hi, bool down) {
-    auto r = b.getLocalBounds().toFloat().reduced(0.5f);
-    bool on = b.getToggleState();
-    auto base = on ? (b.getProperties().contains("danger") ? juce::Colour(0xffd0574b) : ui::accent) : ui::panelHi;
-    if (hi) base = base.brighter(0.08f);
-    if (down) base = base.darker(0.1f);
-    g.setColour(base);
-    g.fillRoundedRectangle(r, 6.0f);
-    g.setColour(ui::line);
-    if (!on) g.drawRoundedRectangle(r, 6.0f, 1.0f);
-}
-
 // ---------------------------------------------------------------- drag chip
 void DragChip::paint(juce::Graphics& g) {
     auto r = getLocalBounds().toFloat().reduced(1.0f);
@@ -72,6 +16,20 @@ void DragChip::paint(juce::Graphics& g) {
     g.drawText(text, getLocalBounds().reduced(16, 0), juce::Justification::centredLeft);
     g.setColour(ui::textDim);
     g.drawText(juce::String::fromUTF8("⤴"), getLocalBounds().reduced(10, 0), juce::Justification::centredRight);
+    if (lockable && (locked || hover)) {
+        // padlock in the top-right corner: solid when locked, faint on hover
+        auto b = juce::Rectangle<float>((float)getWidth() - 34.0f, 7.0f, 9.0f, 7.0f);
+        g.setColour(locked ? ui::accent : ui::textDim.withAlpha(0.6f));
+        g.fillRoundedRectangle(b, 1.5f);
+        juce::Path shackle;
+        shackle.addCentredArc(b.getCentreX(), b.getY(), 3.0f, 3.5f, 0.0f, -juce::MathConstants<float>::halfPi,
+                              juce::MathConstants<float>::halfPi, true);
+        g.strokePath(shackle, juce::PathStrokeType(1.4f));
+    }
+    if (locked) {
+        g.setColour(ui::accent);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 6.0f, 1.2f);
+    }
 }
 
 void DragChip::mouseDrag(const juce::MouseEvent& e) {
@@ -109,8 +67,26 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
     label(complexityLbl, U("Сложность"));
     label(voicesLbl, U("По голосам (= общая)"));
     label(soundLbl, U("Звук прослушивания"));
+    label(choirLbl, U("Состав хора"));
+    label(inputLbl, U("Что на входе"));
+    variantLbl.setFont(juce::FontOptions(12.5f));
+    variantLbl.setColour(juce::Label::textColourId, ui::textDim);
+    variantLbl.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(variantLbl);
+    for (auto* b : {&prevVarBtn, &nextVarBtn}) addAndMakeVisible(b);
+    prevVarBtn.onClick = [this] { proc.stepVariant(-1); };
+    nextVarBtn.onClick = [this] { proc.stepVariant(+1); };
+    nextVarBtn.setTooltip(U("Те же настройки, другое голосоведение"));
 
-    for (auto* c : {&styleBox, &textureBox, &outOfModeBox, &soundBox}) addAndMakeVisible(c);
+    for (auto* c : {&styleBox, &textureBox, &outOfModeBox, &soundBox, &choirBox, &inputBox}) addAndMakeVisible(c);
+    choirBox.addItemList(ChoirProcessor::choirNames(), 1);
+    inputBox.addItemList({U("Авто"), U("Аккорды"), U("Гармонизовать мелодию")}, 1);
+    choirA = std::make_unique<CA>(proc.params, "choir", choirBox);
+    inputA = std::make_unique<CA>(proc.params, "input", inputBox);
+    inputBox.setTooltip(U("Авто: если на входе одна мелодия без аккордов, плагин подберёт аккорды сам"));
+    addAndMakeVisible(amateurBtn);
+    amateurA = std::make_unique<BA>(proc.params, "amateur", amateurBtn);
+    choirBox.onChange = [this] { updateStyleControls(); };
     styleBox.addItemList(ChoirProcessor::styleNames(), 1);
     soundBox.addItemList({U("Пианино"), U("Хор")}, 1);
     textureBox.addItemList({U("Унисон"), U("Органум в кварту"), U("Органум в квинту")}, 1);
@@ -174,8 +150,8 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
 
     proc.onResultChanged = [this] { refresh(); };
     setResizable(true, true);
-    setResizeLimits(940, 600, 1900, 1300);
-    setSize(1120, 700);
+    setResizeLimits(940, 660, 1900, 1300);
+    setSize(1120, 740);
     updateStyleControls();
     refresh();
     startTimerHz(30);
@@ -206,6 +182,12 @@ void ChoirEditor::updateStyleControls() {
         voice[i].setVisible(!chant);
         voiceLbl[i].setVisible(!chant);
     }
+    bool voiceLeading = st == Style::Bach || st == Style::Obikhod || st == Style::Renaissance ||
+                        st == Style::Contemporary || st == Style::Gospel || st == Style::Partes ||
+                        st == Style::Spiritual || st == Style::Anglican;
+    choirLbl.setVisible(voiceLeading);
+    choirBox.setVisible(voiceLeading);
+    amateurBtn.setVisible(voiceLeading);
     // barbershop names its voices differently
     const char* names[4] = {"S", "A", "T", "B"};
     const char* bb[4] = {"T", "L", "Br", "B"};
@@ -229,6 +211,11 @@ void ChoirEditor::refresh() {
         c->colour = ui::partColour(r.parts[i].name);
         int idx = (int)i;
         c->makeFile = [this, idx] { return proc.writePartFile(idx); };
+        c->lockable = true;
+        c->locked = proc.isLocked(c->label);
+        auto nm = c->label;
+        c->onClick = [this, nm] { proc.toggleLock(nm); };
+        c->setTooltip(U("Тяните на дорожку. Щелчок закрепляет партию: при смене сложности и вариантов она не меняется"));
         addAndMakeVisible(c);
     }
     allChip->setVisible(!r.parts.empty());
@@ -238,6 +225,10 @@ void ChoirEditor::refresh() {
                                            : juce::String::fromUTF8("Вход: ") + proc.inputSource(),
                       juce::dontSendNotification);
     exportBtn.setEnabled(!r.parts.empty());
+    int var = (int)*proc.params.getRawParameterValue("variant");
+    variantLbl.setText(var == 0 ? U("Основной вариант") : U("Вариант ") + juce::String(var), juce::dontSendNotification);
+    prevVarBtn.setEnabled(var > 0);
+    nextVarBtn.setEnabled(!r.parts.empty());
     scoreBtn.setEnabled(!r.parts.empty());
     scoreChip->setVisible(!r.parts.empty());
     playBtn.setEnabled(!r.parts.empty());
@@ -286,38 +277,53 @@ void ChoirEditor::resized() {
     captureBtn.setBounds(top.removeFromRight(176));
     sourceLbl.setBounds(top.reduced(8, 0));
 
-    auto side = b.removeFromLeft(256).reduced(12, 0).withTrimmedBottom(12).reduced(14, 14);
-    styleLbl.setBounds(side.removeFromTop(18));
-    styleBox.setBounds(side.removeFromTop(30));
-    side.removeFromTop(10);
-    if (octavistsBtn.isVisible()) {
-        octavistsBtn.setBounds(side.removeFromTop(26));
-        side.removeFromTop(6);
+    auto side = b.removeFromLeft(256).reduced(12, 0).withTrimmedBottom(12).reduced(14, 12);
+    auto row = [&](juce::Component& c, int h, int gap) {
+        c.setBounds(side.removeFromTop(h));
+        side.removeFromTop(gap);
+    };
+    row(inputLbl, 16, 0);
+    row(inputBox, 28, 8);
+    row(styleLbl, 16, 0);
+    row(styleBox, 28, 6);
+    if (choirBox.isVisible()) {
+        row(choirLbl, 16, 0);
+        row(choirBox, 28, 2);
+        row(amateurBtn, 22, 4);
     }
+    if (octavistsBtn.isVisible()) row(octavistsBtn, 22, 4);
     if (textureBox.isVisible()) {
-        textureLbl.setBounds(side.removeFromTop(18));
-        textureBox.setBounds(side.removeFromTop(30));
-        side.removeFromTop(8);
+        row(textureLbl, 16, 0);
+        row(textureBox, 28, 6);
     }
     if (outOfModeBox.isVisible()) {
-        outOfModeLbl.setBounds(side.removeFromTop(18));
-        outOfModeBox.setBounds(side.removeFromTop(30));
-        side.removeFromTop(6);
+        row(outOfModeLbl, 16, 0);
+        row(outOfModeBox, 28, 4);
     }
-    if (mixedBtn.isVisible()) mixedBtn.setBounds(side.removeFromTop(26));
-    side.removeFromTop(12);
-    complexityLbl.setBounds(side.removeFromTop(18));
-    complexity.setBounds(side.removeFromTop(118).withSizeKeepingCentre(118, 118));
-    side.removeFromTop(8);
-    voicesLbl.setBounds(side.removeFromTop(18));
-    auto row = side.removeFromTop(56);
-    int w = row.getWidth() / 4;
-    for (int i = 0; i < 4; ++i) voice[i].setBounds(row.removeFromLeft(w).withSizeKeepingCentre(52, 52));
-    auto lrow = side.removeFromTop(16);
-    for (int i = 0; i < 4; ++i) voiceLbl[i].setBounds(lrow.removeFromLeft(w));
-    auto snd = side.removeFromBottom(50);
-    soundLbl.setBounds(snd.removeFromTop(18));
-    soundBox.setBounds(snd.removeFromTop(30));
+    if (mixedBtn.isVisible()) row(mixedBtn, 22, 4);
+    auto snd = side.removeFromBottom(46);
+    soundLbl.setBounds(snd.removeFromTop(16));
+    soundBox.setBounds(snd.removeFromTop(28));
+    side.removeFromBottom(8);
+    auto varRow = side.removeFromBottom(28);
+    prevVarBtn.setBounds(varRow.removeFromLeft(34));
+    varRow.removeFromLeft(6);
+    nextVarBtn.setBounds(varRow);
+    variantLbl.setBounds(side.removeFromBottom(18));
+    side.removeFromBottom(4);
+    complexityLbl.setBounds(side.removeFromTop(16));
+    bool showVoices = voicesLbl.isVisible();
+    int knob = juce::jlimit(64, 110, side.getHeight() - (showVoices ? 96 : 4));
+    complexity.setBounds(side.removeFromTop(knob).withSizeKeepingCentre(knob, knob));
+    if (showVoices) {
+        side.removeFromTop(4);
+        voicesLbl.setBounds(side.removeFromTop(16));
+        auto vrow = side.removeFromTop(52);
+        int w = vrow.getWidth() / 4;
+        for (int i = 0; i < 4; ++i) voice[i].setBounds(vrow.removeFromLeft(w).withSizeKeepingCentre(48, 48));
+        auto lrow = side.removeFromTop(16);
+        for (int i = 0; i < 4; ++i) voiceLbl[i].setBounds(lrow.removeFromLeft(w));
+    }
 
     auto main = b.reduced(4, 0).withTrimmedRight(12).withTrimmedBottom(12);
     auto rep = main.removeFromBottom(proc.result().issues.size() > 2 ? 150 : 118);

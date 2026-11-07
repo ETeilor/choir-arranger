@@ -50,6 +50,11 @@ public:
     static bool isMidiFile(const juce::File& f);        // by content (MThd), any extension
     static bool isMidiData(const std::vector<unsigned char>& bytes);
     static juce::StringArray styleNames();
+    static juce::StringArray choirNames();
+    // locks and variants
+    void toggleLock(const juce::String& part);
+    bool isLocked(const juce::String& part) const;
+    void stepVariant(int dir);     // +1: the next variant that differs, -1: back
     std::function<void()> onResultChanged;
 
     // capture
@@ -74,6 +79,8 @@ private:
     choir::Meta meta_;
     juce::String inputSource_;
     choir::Result result_;
+    std::map<std::string, std::vector<choir::Note>> locks_;
+    int lockKey_ = -1;
 
     // capture (audio thread writes, message thread reads after stop)
     struct RawEvent { double ppq; int note, vel; bool on; };

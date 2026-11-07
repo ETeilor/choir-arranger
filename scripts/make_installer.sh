@@ -19,8 +19,11 @@ stage() {   # stage <bundle> <subdir>
     codesign --force --deep --sign - "$WORK/$2/$(basename "$1")"
     codesign --verify --deep --strict "$WORK/$2/$(basename "$1")"
 }
+LIVE="build/ChoirArrangerLive_artefacts/Release"
 stage "$ART/AU/Choir Arranger.component" au
+stage "$LIVE/AU/Choir Arranger Live.component" au
 stage "$ART/VST3/Choir Arranger.vst3" vst3
+stage "$LIVE/VST3/Choir Arranger Live.vst3" vst3
 stage "$ART/Standalone/Choir Arranger.app" app
 
 # the same postinstall in every component package: it only touches paths that exist
@@ -67,6 +70,8 @@ Choir Arranger: установка
 2. Установщик положит плагин в /Library/Audio/Plug-Ins (AU и VST3) и приложение в Applications.
 3. Перезапустите Logic Pro. Плагин: дорожка программного инструмента →
    AU Instruments → Teilormusic → Choir Arranger.
+   Живой режим: на дорожке с хоровой библиотекой слот MIDI FX →
+   Audio Units → Teilormusic → Choir Arranger Live.
    Если Logic его не показал: Logic Pro → Settings → Plug-in Manager, выберите Choir Arranger,
    нажмите «Reset & Rescan Selection».
 EOF

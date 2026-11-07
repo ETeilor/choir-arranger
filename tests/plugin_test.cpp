@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
+#include "LiveProcessor.h"
 
 struct FakeHead : juce::AudioPlayHead {
     bool playing = false;
@@ -130,6 +131,100 @@ int main(int argc, char** argv) {
     expect(p.loadMidiFile(odd, e2), "файл без расширения загружен");
     expect(p.loadMidiFile(input, e2), "вход возвращён");
 
+    // 5c. variants, locks, choir make-up, melody harmonization
+    {
+        auto setP = [&](const char* id, float v) {
+            auto* prm = p.params.getParameter(id);
+            prm->setValueNotifyingHost(prm->convertTo0to1(v));
+            pump(150);
+        };
+        setP("style", 0);
+        auto base = p.result();
+        p.stepVariant(+1);
+        pump(200);
+        int var = (int)*p.params.getRawParameterValue("variant");
+        bool differs = false;
+        for (size_t i = 0; i < base.parts.size() && i < p.result().parts.size(); ++i)
+            if (base.parts[i].notes.size() != p.result().parts[i].notes.size()) differs = true;
+            else
+                for (size_t k = 0; k < base.parts[i].notes.size(); ++k)
+                    if (base.parts[i].notes[k].pitch != p.result().parts[i].notes[k].pitch) differs = true;
+        expect(var > 0 && differs, "другой вариант: " + juce::String(var));
+        p.toggleLock("Bass");
+        auto bassBefore = p.result().parts[3].notes;
+        setP("complexity", 8);
+        bool kept = p.result().parts[3].notes.size() == bassBefore.size();
+        for (size_t k = 0; kept && k < bassBefore.size(); ++k)
+            kept = p.result().parts[3].notes[k].pitch == bassBefore[k].pitch;
+        expect(kept && p.isLocked("Bass"), "закреплённый бас не изменился при сложности 8");
+        p.toggleLock("Bass");
+        setP("complexity", 4);
+        setP("variant", 0);
+        setP("choir", 3);
+        juce::StringArray names;
+        for (auto& pt : p.result().parts) names.add(juce::String::fromUTF8(pt.name.c_str()));
+        expect(names.joinIntoString(",") == "Soprano,Alto,Baritone", "состав SAB: " + names.joinIntoString(","));
+        setP("choir", 2);
+        names.clear();
+        for (auto& pt : p.result().parts) names.add(juce::String::fromUTF8(pt.name.c_str()));
+        expect(names.joinIntoString(",") == "Tenor 1,Tenor 2,Bass 1,Bass 2", "состав TTBB: " + names.joinIntoString(","));
+        setP("choir", 0);
+        auto mel = input.getParentDirectory().getParentDirectory().getChildFile("melodies").getChildFile("ode.mid");
+        juce::String e3;
+        expect(p.loadMidiFile(mel, e3) && p.result().harmonized && p.result().parts.size() == 4,
+               "мелодия гармонизована: " + juce::String((int)p.result().chords.size()) + " аккордов " + e3);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+        ed->setSize(1120, 740);
+        pump(100);
+        auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
+        auto out = outDir.getChildFile("ui_harmonized.png");
+        out.deleteFile();
+        juce::FileOutputStream os(out);
+        juce::PNGImageFormat().writeImageToStream(img, os);
+        ed.reset();
+        expect(p.loadMidiFile(input, e3), "вход возвращён");
+    }
+
+    // 5d. live MIDI FX
+    {
+        LiveProcessor lp;
+        lp.prepareToPlay(48000, 512);
+        juce::AudioBuffer<float> none(0, 512);
+        auto play = [&](std::vector<int> on, std::vector<int> off) {
+            juce::MidiBuffer m;
+            for (int k : off) m.addEvent(juce::MidiMessage::noteOff(1, k), 0);
+            for (int k : on) m.addEvent(juce::MidiMessage::noteOn(1, k, (juce::uint8)90), 10);
+            lp.processBlock(none, m);
+            juce::MidiBuffer next;
+            lp.processBlock(none, next);   // the chord settles within a few milliseconds
+            for (const auto x : next) m.addEvent(x.getMessage(), x.samplePosition);
+            return m;
+        };
+        auto count = [](const juce::MidiBuffer& m, bool on) {
+            int n = 0;
+            for (const auto x : m) n += on ? x.getMessage().isNoteOn() : x.getMessage().isNoteOff();
+            return n;
+        };
+        auto a = play({57, 60, 64, 69}, {});
+        expect(count(a, true) == 4, "живой режим: Am дал 4 голоса, нот " + juce::String(count(a, true)));
+        auto f = play({53, 57, 60, 72}, {57, 60, 64, 69});
+        expect(count(f, true) >= 1 && count(f, true) <= 4, "живой режим: смена на F переозвучила голоса");
+        auto off = play({}, {53, 57, 60, 72});
+        expect(count(off, false) == 4, "живой режим: отпустили, все голоса сняты");
+        lp.params.getParameter("channels")->setValueNotifyingHost(1.0f);
+        auto ch = play({48, 52, 55, 72}, {});
+        std::set<int> chans;
+        for (const auto x : ch) if (x.getMessage().isNoteOn()) chans.insert(x.getMessage().getChannel());
+        expect(chans.size() == 4, "живой режим: каждый голос в своём канале");
+        std::unique_ptr<juce::AudioProcessorEditor> ed(lp.createEditor());
+        pump(100);
+        auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
+        auto out = outDir.getChildFile("ui_live.png");
+        out.deleteFile();
+        juce::FileOutputStream os(out);
+        juce::PNGImageFormat().writeImageToStream(img, os);
+    }
+
     // 6. editor snapshots, one per style
     const char* tags[20] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
                             "contemporary", "gospel", "barbershop", "epic", "partes", "spiritual", "anglican",
@@ -148,7 +243,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 300; ++i) p.processBlock(buf, mo);
         }
         std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
-        ed->setSize(1120, 700);
+        ed->setSize(1120, 740);
         pump(100);
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
         auto out = outDir.getChildFile(juce::String("ui_") + tags[st] + ".png");
@@ -160,7 +255,7 @@ int main(int argc, char** argv) {
     }
     ChoirProcessor empty;
     std::unique_ptr<juce::AudioProcessorEditor> ed(empty.createEditor());
-    ed->setSize(1120, 700);
+    ed->setSize(1120, 740);
     pump(100);
     auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
     auto out = outDir.getChildFile("ui_empty.png");

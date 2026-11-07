@@ -22,6 +22,23 @@ struct Levels {
 };
 
 Levels resolveLevels(const Settings& s, bool melodyIsReal);
+
+// deterministic noise in [0, 1) for alternative variants; 0 for variant 0 (the default arrangement)
+inline double vnoise(int variant, int a, int b) {
+    if (variant <= 0) return 0.0;
+    unsigned h = 2166136261u;
+    for (int x : {variant, a, b}) {
+        h ^= (unsigned)x;
+        h *= 16777619u;
+        h ^= h >> 13;
+    }
+    return (double)(h % 10007u) / 10007.0;
+}
+
+// melody harmonization (Harmonize.cpp)
+bool isMonophonic(const std::vector<Note>& notes);
+std::vector<Chord> harmonize(const std::vector<Note>& melody, const Meta& meta, Style style, int level, int variant,
+                             int& tonic, bool& minor);
 std::string issuePos(int t, int num);
 
 }  // namespace choir

@@ -379,7 +379,7 @@ Result arrangeEpic(const Analysis& an, const Meta& meta, const Settings& s) {
         for (int p = 55; p <= 72; ++p) {                                     // open sound under the melody
             int pc = mod12(p), gap = S - p;
             if (gap < 3 || gap > 9 || !c.has(pc)) continue;
-            double sc = (pc == c.fifth || pc == c.root ? 0 : 1.5) + 0.2 * std::abs(p - pA);
+            double sc = (pc == c.fifth || pc == c.root ? 0 : 1.5) + 0.2 * std::abs(p - pA) + 1.5 * vnoise(s.variant, a, p);
             if (sc < best) best = sc, A = p;
         }
         if (A < 0) A = near(c.root, 55, 72, pA);

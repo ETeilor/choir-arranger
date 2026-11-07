@@ -5,6 +5,8 @@
 # registry is restarted so Logic sees the new version.
 for p in "/Library/Audio/Plug-Ins/Components/Choir Arranger.component" \
          "/Library/Audio/Plug-Ins/VST3/Choir Arranger.vst3" \
+         "/Library/Audio/Plug-Ins/Components/Choir Arranger Live.component" \
+         "/Library/Audio/Plug-Ins/VST3/Choir Arranger Live.vst3" \
          "/Applications/Choir Arranger.app"; do
     [ -e "$p" ] && xattr -dr com.apple.quarantine "$p" 2>/dev/null
 done

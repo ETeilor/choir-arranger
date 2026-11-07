@@ -52,8 +52,8 @@ std::vector<Note> clipNotes(const std::vector<Note>& ns, int a, int b) {
 }
 
 // double choir: phrases of two bars sung in turn by choir I and choir II, the last one by both
-std::vector<Part> partesChoirs(const Parts& parts, int barTicks, int tEnd, int level) {
-    const char* names[4] = {"Bass", "Tenor", "Alto", "Soprano"};
+std::vector<Part> partesChoirs(const Parts& parts, int barTicks, int tEnd, int level, const StyleP& st) {
+    const char* const* names = st.partNames;
     std::vector<Part> out;
     if (level < 3) {
         for (int v = VS; v >= VB; --v) out.push_back({names[v], parts[v]});
@@ -217,7 +217,8 @@ Result arrangeSacredHarp(const Analysis& an, const Meta& meta, const Settings& s
                 int pc = mod12(p);
                 if (!c.has(pc)) continue;
                 if (last && pc == c.third) continue;                         // the final chord is open
-                double sc = (pc == c.root || pc == c.fifth ? 0 : 2.0) + 0.25 * std::abs(p - prev);
+                double sc = (pc == c.root || pc == c.fifth ? 0 : 2.0) + 0.25 * std::abs(p - prev) +
+                            2.0 * vnoise(s.variant, a, p);
                 if (above >= 0 && p <= above) sc += 3;
                 if (sc < bs) bs = sc, best = p;
             }
@@ -275,7 +276,8 @@ Result arrangeBulgarian(const Analysis& an, const Meta& meta, const Settings& s)
             int S2 = -1;
             if (level >= 5 && b - a >= Q) {
                 // a second below the tune: the rub this singing is known for
-                for (int d : {2, 1}) if (diat(M - d) && M - d > D) { S2 = M - d; break; }
+                bool half = vnoise(s.variant, a, 1) > 0.5;
+                for (int d : {half ? 1 : 2, half ? 2 : 1}) if (diat(M - d) && M - d > D) { S2 = M - d; break; }
             }
             if (S2 < 0) {
                 for (int d : {3, 4}) if (diat(M - d) && M - d > D) { S2 = M - d; break; }
@@ -317,7 +319,7 @@ Result arrangeGeorgian(const Analysis& an, const Meta& meta, const Settings& s) 
         for (int p = B + 3; p <= T + (level >= 7 ? 2 : -1); ++p) {
             if (!diat(p)) continue;
             int up = T - p, dn = p - B;
-            double cost = 0.3 * std::abs(p - pM);
+            double cost = 0.3 * std::abs(p - pM) + 1.5 * vnoise(s.variant, a, p);
             int iu = ((up % 12) + 12) % 12, id = ((dn % 12) + 12) % 12;
             cost += (iu == 5 || iu == 7) ? 0 : (iu == 2 && level >= 5) ? 0.5 : iu == 0 ? 1.5 : 2.5;
             cost += (id == 7 || id == 5 || id == 0) ? 0 : 1.5;
@@ -364,7 +366,7 @@ Result arrangeTintinnabuli(const Analysis& an, const Meta& meta, const Settings&
         bool att = g.melStarts.count(a);
         if (att) ++k;
         putNote(S, a, b, M, att);
-        bool above = level >= 4 && k % 2 == 0;       // alternating position from level 4
+        bool above = level >= 4 && k % 2 == s.variant % 2;   // alternating position from level 4
         int t = tVoice(M, above);
         if (above && t > 79) t = tVoice(M, false);
         putNote(A, a, b, t, att);
@@ -430,8 +432,8 @@ Result arrangeCloseHarmony(const Analysis& an, const Meta& meta, const Settings&
             --p;
         }
         while ((int)inner.size() < 3) inner.push_back(inner.empty() ? L - 12 : inner.back() - 5);
-        if (level >= 3) {                                   // drop 2: the second voice goes down an octave
-            inner[0] -= 12;
+        if (level >= 3) {                                   // drop 2 (drop 3 in odd variants)
+            inner[s.variant % 2 == 1 ? 1 : 0] -= 12;
             std::sort(inner.rbegin(), inner.rend());
         }
         if (passing) ++blocks;
@@ -506,6 +508,7 @@ Result arrangeAcappellaPop(const Analysis& an, const Meta& meta, const Settings&
         std::sort(tones.begin(), tones.end());
         tones.erase(std::unique(tones.begin(), tones.end()), tones.end());
         while (tones.size() < 3) tones.push_back(c.fifth >= 0 ? c.fifth : c.root);
+        if (s.variant > 0) std::rotate(tones.begin(), tones.begin() + s.variant % 3, tones.begin() + 3);
         std::vector<int> used;
         for (int v = 0; v < 3; ++v) {
             int pc = tones[v];
@@ -582,7 +585,8 @@ Result arrangeTenore(const Analysis& an, const Meta& meta, const Settings& s) {
         int third = level >= 3 ? c.third : mod12(g.tonic + (g.minor ? 3 : 4));
         int Me = (level >= 2 && third >= 0) ? nearPc(third, B + 12, B + 19, B + 15) : B + 12;
         if (level >= 6 && M >= 0) {                       // mesu boghe follows the solo a third or sixth under
-            for (int d : {3, 4, 8, 9})
+            const int ds[2][4] = {{3, 4, 8, 9}, {8, 9, 3, 4}};
+            for (int d : ds[s.variant % 2])
                 if (c.has(mod12(M - d)) && M - d > C) { Me = M - d; break; }
         }
         bool att = pulse.count(a) || g.chordStarts.count(a);

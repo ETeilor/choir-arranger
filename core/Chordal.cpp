@@ -96,6 +96,12 @@ struct StyleP {
     Levels levels;
     std::map<std::string, int> figureMin;   // empty -> default table
     std::vector<int> figureVoices{VB, VT, VA, VS};
+    // variants, locks, three-part choirs
+    int variant = 0;
+    int dropVoice = -1;                       // SAB drops the tenor, SSA the bass: searched, not sung
+    bool relaxed = false;                     // last resort: an incomplete chord costs instead of failing
+    std::array<std::vector<Note>, 4> lockNotes;
+    std::array<bool, 4> locked{};
 };
 
 StyleP bachStyle() {
@@ -371,8 +377,17 @@ double verticalCost(const Voicing& v, const SChord& ch, const StyleP& st, int to
     if (T == A) c += st.wUnison;
     if (A == S) c += st.wUnison;
     bool present[12] = {false};
-    for (int p : v) present[mod12(p)] = true;
-    if (!present[ch.root] || (ch.third >= 0 && !present[ch.third])) return INF;
+    for (int i = 0; i < 4; ++i)
+        if (i != st.dropVoice) present[mod12(v[i])] = true;
+    if (st.dropVoice >= 0) {
+        // three sung voices: a missing root or third costs, the silent voice does not count
+        if (!present[ch.root]) c += 4.0;
+        if (ch.third >= 0 && !present[ch.third]) c += 8.0;
+        if (st.dropVoice == VT && T == A) c -= st.wUnison;   // the silent tenor may share the alto's note
+    } else if (st.relaxed) {
+        if (!present[ch.root]) c += 12.0;
+        if (ch.third >= 0 && !present[ch.third]) c += 16.0;
+    } else if (!present[ch.root] || (ch.third >= 0 && !present[ch.third])) return INF;
     if (ch.sus >= 0 && !present[ch.sus]) return INF;
     if (!present[ch.fifth]) c += st.wNoFifth;
     if (ch.seventh >= 0 && !present[ch.seventh]) c += st.wNoSeventh;
@@ -393,6 +408,10 @@ double verticalCost(const Voicing& v, const SChord& ch, const StyleP& st, int to
         int pc = kv.first, n = kv.second;
         if (n < 2) continue;
         int role = ch.role[pc];
+        if (st.relaxed && (role == R_SEVENTH || role == R_SUS || role == R_COLOR || (pc == leading && ch.dominant))) {
+            c += 20.0;
+            continue;
+        }
         if (role == R_SEVENTH) return INF;
         if (role == R_SUS || role == R_COLOR) return INF;
         if (pc == leading && ch.dominant) return INF;
@@ -451,10 +470,24 @@ std::vector<Cand> candidates(const Slice& sl, const SChord& ch, const StyleP& st
                     Voicing v{B, T, A, S};
                     double vc = verticalCost(v, ch, st, tonic);
                     if ((sl.first || sl.final_) && mod12(B) != ch.bassPc) vc += st.wInversion;
+                    if (st.variant > 0)
+                        vc += 6.0 * vnoise(st.variant, sl.start, ((B * 131 + T) * 131 + A) * 131 + S);
                     if (vc < INF) out.push_back({v, vc});
                 }
             }
         }
+    // locked voices keep their pitch wherever the lock has a note at this slice
+    for (int lv = 0; lv < 4; ++lv) {
+        if (!st.locked[lv]) continue;
+        int want = -1;
+        for (auto& n : st.lockNotes[lv])
+            if (n.start <= sl.start && sl.start < n.end) want = n.pitch;
+        if (want < 0) continue;
+        std::vector<Cand> keep;
+        for (auto& c : out)
+            if (c.v[lv] == want) keep.push_back(c);
+        if (!keep.empty()) out.swap(keep);
+    }
     return out;
 }
 
@@ -553,6 +586,13 @@ bool viterbi(const std::vector<Slice>& slices, const std::vector<SChord>& ch, co
             wide.maxSA = wide.maxAT = 24, wide.maxTB = 28, wide.maxST = 99;
             wide.rangeLo[VB] -= 5, wide.rangeLo[VT] -= 3;      // and a little more room below
             cands.back() = candidates(slices[i], ch[slices[i].ci], wide, tonic);
+            if (cands.back().empty()) {
+                // equal-voice and amateur choirs: more room below, and an incomplete chord if need be
+                for (int v = 0; v < 4; ++v)
+                    if (v != wide.melodyVoice) wide.rangeLo[v] -= 4;
+                wide.relaxed = true;
+                cands.back() = candidates(slices[i], ch[slices[i].ci], wide, tonic);
+            }
         }
         if (cands.back().empty()) {
             err = "нет допустимого расположения голосов в аккорде " + ch[slices[i].ci].srcName + " (доля " +
@@ -1060,7 +1100,7 @@ std::vector<Issue> checkParts(const Parts& parts, int num, const StyleP& st) {
     // ranges, in the prototype's voice order
     for (int v = 0; v < 4; ++v)
         for (auto& n : parts[v])
-            if (!(st.rangeLo[v] <= n.pitch && n.pitch <= st.rangeHi[v]))
+            if (v != st.dropVoice && !(st.rangeLo[v] <= n.pitch && n.pitch <= st.rangeHi[v]))
                 raw.push_back({n.start, std::string(1, VOICE_CH[v]) + " " + std::to_string(n.pitch) +
                                             " вне диапазона"});
     bool havePrev = false;
@@ -1077,14 +1117,15 @@ std::vector<Issue> checkParts(const Parts& parts, int num, const StyleP& st) {
             continue;
         }
         for (int a = 0; a < 3; ++a)
-            if (cur[a] > cur[a + 1])
+            if (a != st.dropVoice && a + 1 != st.dropVoice && cur[a] > cur[a + 1])
                 raw.push_back({t, std::string(1, VOICE_CH[a]) + " выше " + VOICE_CH[a + 1]});
-        if (cur[3] - cur[2] > 12 || cur[2] - cur[1] > 12)
+        if (cur[3] - cur[2] > 12 || (st.dropVoice != VT && cur[2] - cur[1] > 12))
             raw.push_back({t, "расстояние больше октавы в верхних голосах"});
         if (havePrev && st.checkParallels)
             for (int i = 0; i < 4; ++i)
                 for (int j = i + 1; j < 4; ++j) {
                     if (prev[i] == cur[i] || prev[j] == cur[j]) continue;
+                    if (i == st.dropVoice || j == st.dropVoice) continue;
                     int a = mod12(prev[j] - prev[i]), b = mod12(cur[j] - cur[i]);
                     if (a == b && (b == 0 || b == 7))
                         raw.push_back({t, std::string("параллельные ") + (b == 7 ? "квинты " : "октавы ") +
@@ -1161,21 +1202,118 @@ static int fifthsOf(int pc) {   // key signature of the major key on pc
     return f[mod12(pc)];
 }
 
+// choir make-up: ranges, comfortable tessitura and names by voice index (B T A S)
+void applyChoir(StyleP& st, const Settings& s) {
+    if (st.id == "barbershop") return;   // barbershop is its own TTBB
+    auto set = [&](std::array<int, 4> lo, std::array<int, 4> hi, std::array<int, 4> clo, std::array<int, 4> chi,
+                   std::array<const char*, 4> names) {
+        for (int i = 0; i < 4; ++i) {
+            st.rangeLo[i] = lo[i], st.rangeHi[i] = hi[i], st.comfortLo[i] = clo[i], st.comfortHi[i] = chi[i];
+            st.partNames[i] = names[i];
+        }
+    };
+    switch (s.choir) {
+        case Choir::SATB: break;
+        case Choir::SSAA:
+            set({53, 55, 58, 60}, {69, 72, 76, 79}, {55, 57, 60, 64}, {65, 69, 72, 76},
+                {"Alto 2", "Alto 1", "Soprano 2", "Soprano 1"});
+            st.maxTB = 12;
+            break;
+        case Choir::TTBB:
+            set({38, 43, 48, 50}, {60, 62, 67, 70}, {41, 45, 50, 53}, {55, 59, 64, 67},
+                {"Bass 2", "Bass 1", "Tenor 2", "Tenor 1"});
+            st.melLo = 50, st.melHi = 70, st.melCLo = 53, st.melCHi = 67;
+            st.maxTB = 14;
+            break;
+        case Choir::SAB:
+            set({45, 48, 55, 60}, {64, 67, 74, 79}, {48, 52, 57, 65}, {60, 64, 72, 77},
+                {"Baritone", "-", "Alto", "Soprano"});
+            st.dropVoice = VT;
+            break;
+        case Choir::SSA:
+            set({41, 55, 59, 62}, {62, 69, 74, 77}, {45, 57, 60, 64}, {57, 67, 71, 74},
+                {"-", "Alto", "Soprano 2", "Soprano 1"});
+            st.melLo = 62, st.melHi = 77, st.melCLo = 64, st.melCHi = 74;
+            st.dropVoice = VB;
+            st.maxTB = 28;
+            break;
+    }
+    if (s.amateur)
+        for (int i = 0; i < 4; ++i) {
+            st.rangeLo[i] += 2, st.rangeHi[i] -= 2;
+            st.comfortLo[i] += 1, st.comfortHi[i] -= 1;
+        }
+    if (s.amateur) st.melHi -= 2, st.melCHi -= 1;
+}
+
+// parts that sit long near the top (or bottom) of their range
+std::vector<Issue> tessituraIssues(const Parts& parts, const StyleP& st) {
+    std::vector<Issue> out;
+    for (int v = 0; v < 4; ++v) {
+        if (v == st.dropVoice || parts[v].empty()) continue;
+        double tot = 0, hi = 0, lo = 0;
+        for (auto& n : parts[v]) {
+            tot += n.dur();
+            if (n.pitch > st.comfortHi[v] + 1) hi += n.dur();
+            if (n.pitch < st.comfortLo[v] - 2) lo += n.dur();
+        }
+        if (tot <= 0) continue;
+        if (hi / tot > 0.35)
+            out.push_back({"тесситура", std::string(st.partNames[v]) + " долго поёт высоко (" +
+                                            std::to_string((int)std::lround(100 * hi / tot)) + "% времени)"});
+        if (lo / tot > 0.6)
+            out.push_back({"тесситура", std::string(st.partNames[v]) + " долго поёт низко (" +
+                                            std::to_string((int)std::lround(100 * lo / tot)) + "% времени)"});
+    }
+    return out;
+}
+
 Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings& s) {
     Result res;
     Analysis an = analyse(notes);
+    bool harmonized = false;
+    // a bare melody (or the user's choice): the plug-in picks the chords first
+    bool bare = an.chords.empty() && !an.melody.empty();
+    if (s.input == InputMode::HarmonizeMelody || (s.input == InputMode::Auto && bare)) {
+        std::vector<Note> mel = an.melody;
+        if (mel.empty() || (bare && isMonophonic(notes))) {
+            mel.clear();
+            for (auto& n : notes) mel.push_back(Note{n.start, n.end, n.pitch, n.vel});
+            std::sort(mel.begin(), mel.end(), [](const Note& a, const Note& b) { return a.start < b.start; });
+            for (size_t i = 0; i + 1 < mel.size(); ++i) mel[i].end = std::min(mel[i].end, mel[i + 1].start);
+        }
+        int lvl = clamp10(s.global);
+        an.chords = harmonize(mel, meta, s.style, lvl, s.variant, an.tonic, an.minor);
+        an.melody = mel;
+        an.source = MelodySource::SeparateLine;
+        harmonized = !an.chords.empty();
+    }
     if (an.chords.empty()) {
         res.error = "в файле не найдено аккордов";
         return res;
     }
-    std::string melodyLabel = an.source == MelodySource::SeparateTrack ? "отдельная дорожка"
+    std::string melodyLabel = harmonized ? "только мелодия, аккорды подобраны плагином"
+                              : an.source == MelodySource::SeparateTrack ? "отдельная дорожка"
                               : an.source == MelodySource::SeparateLine ? "отдельная линия над аккордами"
                                                                         : "верхние ноты аккордов";
     auto finish = [&](Result r) {
         r.melodyLabel = melodyLabel;
+        r.harmonized = harmonized;
         if (r.keyFifths == 99) {
             r.keyFifths = fifthsOf(an.minor ? an.tonic + 3 : an.tonic);
             r.keyMinor = an.minor;
+        }
+        // silent helper voices of three-part choirs are not parts
+        std::vector<Part> kept;
+        for (auto& p : r.parts)
+            if (p.name.empty() || p.name[0] != '-') kept.push_back(p);
+        r.parts = kept;
+        // locked parts come back exactly as they were
+        for (auto& p : r.parts) {
+            auto it = s.locks.find(p.name);
+            if (it == s.locks.end()) continue;
+            p.notes = it->second;
+            r.locked.push_back(p.name);
         }
         return r;
     };
@@ -1205,6 +1343,12 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
         lv.v[VS] = s.S >= 0 ? clamp10(s.S) : clamp10(s.global);
     }
     tuneStyle(st, lv);
+    applyChoir(st, s);
+    st.variant = s.variant;
+    for (int v = 0; v < 4; ++v) {
+        auto it = s.locks.find(st.partNames[v]);
+        if (it != s.locks.end()) st.locked[v] = true, st.lockNotes[v] = it->second;
+    }
     std::vector<Chord> chords = an.chords;
     if (st.id == "gospel") chords = gospelHarmony(chords, an.tonic, lv.max());
     if (st.id == "spiritual") chords = gospelHarmony(chords, an.tonic, std::min(lv.max(), 4));
@@ -1228,17 +1372,18 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
         if (n) res.figures["запев и ответ"] = n;
     }
     res.issues = checkParts(parts, meta.num, st);
-    if (st.id == "contemporary") {
+    for (auto& i : tessituraIssues(parts, st)) res.issues.push_back(i);
+    if (st.id == "contemporary" && s.choir == Choir::SATB) {
         res.parts = contemporaryDivisi(parts, sch, lv.max(), st);
     } else if (st.id == "partes") {
         int tEnd = 0;
         for (auto& c : sch) tEnd = std::max(tEnd, c.end);
-        res.parts = partesChoirs(parts, meta.num * TPB * 4 / std::max(1, meta.den), tEnd, lv.max());
+        res.parts = partesChoirs(parts, meta.num * TPB * 4 / std::max(1, meta.den), tEnd, lv.max(), st);
     } else {
         res.parts = {{st.partNames[VS], parts[VS]}, {st.partNames[VA], parts[VA]},
                      {st.partNames[VT], parts[VT]}, {st.partNames[VB], parts[VB]}};
     }
-    if (s.octavists && s.style == Style::Obikhod) {
+    if (s.octavists && s.style == Style::Obikhod && s.choir == Choir::SATB) {
         Part oc{"Octavists", {}};
         for (auto& n : parts[VB])
             if (n.pitch - 12 >= 29) oc.notes.push_back(Note{n.start, n.end, n.pitch - 12, n.vel});
@@ -1250,6 +1395,103 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
     for (auto& c : sch) res.chords.push_back(c.name() == c.srcName ? c.srcName : c.srcName + "→" + c.name());
     res.levels = {lv.v[VS], lv.v[VA], lv.v[VT], lv.v[VB]};
     return finish(res);
+}
+
+// ---------------------------------------------------------------- live voicing
+namespace {
+StyleP liveStyle(Style st) {
+    switch (st) {
+        case Style::Obikhod: case Style::Znamenny: case Style::Gregorian: case Style::Byzantine:
+        case Style::Bulgarian: case Style::Georgian: case Style::Tenore: case Style::Partes:
+            return obikhodStyle();
+        case Style::Contemporary: case Style::Tintinnabuli: case Style::AcappellaPop: return contemporaryStyle();
+        case Style::Gospel: case Style::CloseHarmony: return gospelStyle();
+        case Style::Spiritual: return spiritualStyle();
+        case Style::Barbershop: return barbershopStyle();
+        case Style::Renaissance: return renaissanceStyle();
+        case Style::Anglican: return anglicanStyle();
+        default: return bachStyle();
+    }
+}
+}  // namespace
+
+LiveVoicing LiveVoicer::voice(const std::vector<int>& held, const Settings& s, bool topIsMelody) {
+    LiveVoicing out;
+    if (held.empty()) return out;
+    std::vector<int> hs = held;
+    std::sort(hs.begin(), hs.end());
+    // recognize the chord through the regular analysis
+    std::vector<Note> ns;
+    for (int p : hs) ns.push_back(Note{0, TPB * 4, p, 80});
+    std::set<int> pcs;
+    for (int p : hs) pcs.insert(mod12(p));
+    Chord c;
+    if (pcs.size() >= 2) {
+        Analysis an = analyse(ns);
+        if (!an.chords.empty()) c = an.chords.front();
+    }
+    if (c.pcs.empty()) {   // one key: a major triad on it, or the previous chord if it contains the note
+        int pc = mod12(hs.front());
+        if (havePrev_ && qualityIv(prevQuality_).size() && (pc == prevRoot_)) {
+            c.root = prevRoot_, c.quality = prevQuality_;
+        } else {
+            c.root = pc, c.quality = "";
+        }
+        c.bassPc = c.root;
+        c.pcs = {c.root};
+    }
+    c.start = 0, c.end = TPB * 4;
+    StyleP st = liveStyle(s.style);
+    Levels lv = resolveLevels(s, topIsMelody);
+    tuneStyle(st, lv);
+    applyChoir(st, s);
+    st.variant = s.variant;
+    int tonic = c.root;
+    bool minor = c.quality == "m" || c.quality == "m7";
+    auto sch = translateAll({c}, tonic, minor, st);
+    SChord prevCh = havePrev_ ? translateAll({[&] {
+        Chord p;
+        p.root = prevRoot_, p.quality = prevQuality_, p.bassPc = prevRoot_, p.start = 0, p.end = TPB;
+        return p;
+    }()}, tonic, minor, st)[0] : sch[0];
+    int mel = -1;
+    if (topIsMelody) {
+        mel = hs.back();
+        while (mel < st.melLo) mel += 12;
+        while (mel > st.melHi) mel -= 12;
+    }
+    st.bassAlt.clear();   // the bass sings the bass note the player holds
+    Slice sl{TPB, TPB * 2, 1, mel, -1, false, true, false, false};
+    Slice psl{0, TPB, 0, -1, -1, false, true, false, false};
+    auto cands = candidates(sl, sch[0], st, tonic);
+    if (cands.empty()) {
+        StyleP wide = st;
+        wide.maxSA = wide.maxAT = 24, wide.maxTB = 28, wide.maxST = 99;
+        cands = candidates(sl, sch[0], wide, tonic);
+    }
+    if (cands.empty() && mel >= 0) {
+        sl.mel = -1;
+        cands = candidates(sl, sch[0], st, tonic);
+    }
+    if (cands.empty()) return out;
+    double best = INF;
+    Voicing pick = cands.front().v;
+    for (auto& cd : cands) {
+        double t = cd.vc;
+        if (havePrev_) t += transitionCost(prev_, cd.v, psl, sl, prevCh, sch[0], st, tonic);
+        if (t < best) best = t, pick = cd.v;
+    }
+    prev_ = pick;
+    prevRoot_ = c.root;
+    prevQuality_ = sch[0].quality;
+    havePrev_ = true;
+    for (int v = 3; v >= 0; --v) {
+        if (v == st.dropVoice) continue;
+        out.names.push_back(st.partNames[v]);
+        out.pitches.push_back(pick[v]);
+    }
+    out.chord = sch[0].name();
+    return out;
 }
 
 std::string Result::report() const {
@@ -1273,6 +1515,10 @@ std::string Result::report() const {
             o << (firstF ? " " : ", ") << (it == ru.end() ? f.first : it->second) << " " << f.second;
             firstF = false;
         }
+    }
+    if (!locked.empty()) {
+        o << "\nЗакреплены:";
+        for (size_t i = 0; i < locked.size(); ++i) o << (i ? ", " : " ") << locked[i];
     }
     if (issues.empty())
         o << "\nПроверка: нарушений нет";

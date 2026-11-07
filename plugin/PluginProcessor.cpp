@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "PianoRoll.h"
+#include "Look.h"
 #include <cstring>
 
 namespace {
@@ -143,20 +144,13 @@ choir::Style styleFromIndex(int i) {
 }
 
 const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", "voiceB",
-                           "octavists", "texture", "outofmode", "mixed"};
+                           "octavists", "texture", "outofmode", "mixed", "choir", "amateur", "input", "variant"};
 
 }  // namespace
 
 // ---------------------------------------------------------------- setup
-juce::StringArray ChoirProcessor::styleNames() {
-    // same order as choir::Style
-    return {U("Хорал Баха"), U("Православный обиход"), U("Григорианский хорал"), U("Знаменный распев (гармонизация)"),
-            U("Византийский напев с исоном"), U("Ренессансная полифония"), U("Contemporary (Уитакр, Лауридсен)"),
-            U("Госпел"), U("Барбершоп"), U("Кинематографический эпик"), U("Партесный концерт (Бортнянский)"),
-            U("Спиричуэл"), U("Англиканское пение"), U("Sacred Harp (фигурные ноты)"), U("Болгарский женский хор"),
-            U("Грузинское многоголосие"), U("Тинтиннабули (Пярт)"), U("Джазовый close harmony"), U("A cappella поп"),
-            U("Сардинский cantu a tenore")};
-}
+juce::StringArray ChoirProcessor::choirNames() { return names::choirs(); }
+juce::StringArray ChoirProcessor::styleNames() { return names::styles(); }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {
     using namespace juce;
@@ -175,6 +169,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"outofmode", 1}, "Out of mode",
                                                  StringArray{U("Подменять ладовым"), U("Пропускать")}, 0));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{"mixed", 1}, "Mixed choir", false));
+    l.add(std::make_unique<AudioParameterChoice>(ParameterID{"choir", 1}, "Choir", choirNames(), 0));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{"amateur", 1}, "Amateur ranges", false));
+    l.add(std::make_unique<AudioParameterChoice>(ParameterID{"input", 1}, "Input",
+                                                 StringArray{U("Авто"), U("Аккорды"), U("Гармонизовать мелодию")}, 0));
+    l.add(std::make_unique<AudioParameterInt>(ParameterID{"variant", 1}, "Variant", 0, 9999, 0));
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"sound", 1}, "Preview sound",
                                                  StringArray{U("Пианино"), U("Хор")}, 0));
     return l;
@@ -226,6 +225,49 @@ void ChoirProcessor::parameterChanged(const juce::String& id, float) {
     triggerAsyncUpdate();
 }
 
+// ---------------------------------------------------------------- locks and variants
+void ChoirProcessor::toggleLock(const juce::String& part) {
+    auto name = part.toStdString();
+    if (locks_.count(name)) locks_.erase(name);
+    else
+        for (auto& p : result_.parts)
+            if (p.name == name) locks_[name] = p.notes;
+    regenerate();
+}
+
+bool ChoirProcessor::isLocked(const juce::String& part) const { return locks_.count(part.toStdString()) > 0; }
+
+static bool sameParts(const choir::Result& a, const choir::Result& b) {
+    if (a.parts.size() != b.parts.size()) return false;
+    for (size_t i = 0; i < a.parts.size(); ++i) {
+        auto &x = a.parts[i].notes, &y = b.parts[i].notes;
+        if (x.size() != y.size()) return false;
+        for (size_t k = 0; k < x.size(); ++k)
+            if (x[k].start != y[k].start || x[k].end != y[k].end || x[k].pitch != y[k].pitch) return false;
+    }
+    return true;
+}
+
+void ChoirProcessor::stepVariant(int dir) {
+    int cur = (int)*params.getRawParameterValue("variant");
+    int next = cur;
+    if (dir < 0) {
+        next = std::max(0, cur - 1);
+    } else if (!input_.empty()) {
+        // skip variants that sound the same as the one on screen
+        auto s = currentSettings();
+        for (int k = 1; k <= 24; ++k) {
+            s.variant = cur + k;
+            if (!sameParts(choir::arrange(input_, meta_, s), result_)) { next = cur + k; break; }
+            next = cur + k;
+        }
+    } else {
+        next = cur + 1;
+    }
+    auto* p = params.getParameter("variant");
+    p->setValueNotifyingHost(p->convertTo0to1((float)juce::jlimit(0, 9999, next)));
+}
+
 choir::Settings ChoirProcessor::currentSettings() const {
     choir::Settings s;
     s.style = styleFromIndex((int)*params.getRawParameterValue("style"));
@@ -239,6 +281,12 @@ choir::Settings ChoirProcessor::currentSettings() const {
     s.texture = tx == 1 ? choir::Texture::Organum4 : tx == 2 ? choir::Texture::Organum5 : choir::Texture::Unison;
     s.outOfMode = (int)*params.getRawParameterValue("outofmode") == 1 ? choir::OutOfMode::Skip : choir::OutOfMode::Substitute;
     s.mixed = *params.getRawParameterValue("mixed") > 0.5f;
+    s.choir = (choir::Choir)juce::jlimit(0, 4, (int)*params.getRawParameterValue("choir"));
+    s.amateur = *params.getRawParameterValue("amateur") > 0.5f;
+    int in = (int)*params.getRawParameterValue("input");
+    s.input = in == 1 ? choir::InputMode::Chords : in == 2 ? choir::InputMode::HarmonizeMelody : choir::InputMode::Auto;
+    s.variant = (int)*params.getRawParameterValue("variant");
+    s.locks = locks_;
     return s;
 }
 
@@ -271,6 +319,7 @@ bool ChoirProcessor::loadMidiFile(const juce::File& f, juce::String& err) {
 
 void ChoirProcessor::setInput(std::vector<choir::Note> notes, choir::Meta meta, const juce::String& source) {
     setPreview(false);
+    locks_.clear();
     input_ = std::move(notes);
     meta_ = meta;
     inputSource_ = source;
@@ -278,6 +327,11 @@ void ChoirProcessor::setInput(std::vector<choir::Note> notes, choir::Meta meta, 
 }
 
 void ChoirProcessor::regenerate() {
+    // a new style, choir or input mode renames the parts: the locks no longer apply
+    int key = (int)*params.getRawParameterValue("style") * 100 + (int)*params.getRawParameterValue("choir") * 10 +
+              (int)*params.getRawParameterValue("input");
+    if (lockKey_ >= 0 && key != lockKey_) locks_.clear();
+    lockKey_ = key;
     if (input_.empty()) {
         result_ = choir::Result();
     } else {
@@ -493,6 +547,14 @@ void ChoirProcessor::getStateInformation(juce::MemoryBlock& dest) {
     juce::String s;
     for (auto& n : input_) s << n.start << ' ' << n.end << ' ' << n.pitch << ' ' << n.vel << ' ' << n.track << ';';
     in->setAttribute("notes", s);
+    auto* lk = xml->createNewChildElement("Locks");
+    for (auto& kv : locks_) {
+        auto* e = lk->createNewChildElement("Lock");
+        e->setAttribute("part", juce::String::fromUTF8(kv.first.c_str()));
+        juce::String ns;
+        for (auto& n : kv.second) ns << n.start << ' ' << n.end << ' ' << n.pitch << ';';
+        e->setAttribute("notes", ns);
+    }
     copyXmlToBinary(*xml, dest);
 }
 
@@ -515,7 +577,20 @@ void ChoirProcessor::setStateInformation(const void* data, int size) {
         meta_ = m;
         inputSource_ = in->getStringAttribute("source");
     }
+    locks_.clear();
+    if (auto* lk = xml->getChildByName("Locks"))
+        for (auto* e : lk->getChildIterator()) {
+            std::vector<choir::Note> ns;
+            for (auto& tok : juce::StringArray::fromTokens(e->getStringAttribute("notes"), ";", "")) {
+                auto f = juce::StringArray::fromTokens(tok, " ", "");
+                if (f.size() >= 3) ns.push_back({f[0].getIntValue(), f[1].getIntValue(), f[2].getIntValue(), 80, 0});
+            }
+            locks_[e->getStringAttribute("part").toStdString()] = ns;
+        }
+    lockKey_ = -1;   // the restored parameters may arrive after this: keep the restored locks
     triggerAsyncUpdate();   // the host may call this off the message thread
 }
 
+#ifndef CHOIR_NO_PLUGIN_ENTRY
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new ChoirProcessor(); }
+#endif
