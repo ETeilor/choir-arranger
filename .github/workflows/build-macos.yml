@@ -29,7 +29,31 @@ jobs:
           auval -v aumu Chor Tlrm
 
       - name: Installer (.pkg and .dmg)
-        run: bash scripts/make_installer.sh 0.4.0
+        run: bash scripts/make_installer.sh 0.4.1
+
+      - name: Install the package the way a user does and validate the installed AU
+        run: |
+          rm -rf ~/Library/Audio/Plug-Ins/Components/"Choir Arranger.component"
+          PKG=$(ls dist/*.pkg)
+          # mark the package as downloaded from the internet, like a browser does
+          xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;$(uuidgen)" "$PKG"
+          sudo installer -pkg "$PKG" -target /
+          C="/Library/Audio/Plug-Ins/Components/Choir Arranger.component"
+          echo "attributes after install:"; xattr -l "$C" || true
+          codesign -dv "$C" 2>&1 | head -5
+          killall -9 AudioComponentRegistrar || true
+          sleep 2
+          auval -v aumu Chor Tlrm
+
+      - name: Diagnostic - does a quarantine flag alone break loading?
+        continue-on-error: true
+        run: |
+          C="/Library/Audio/Plug-Ins/Components/Choir Arranger.component"
+          sudo xattr -w -r com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;$(uuidgen)" "$C"
+          killall -9 AudioComponentRegistrar || true
+          sleep 2
+          auval -v aumu Chor Tlrm 2>&1 | tail -15
+          sudo xattr -dr com.apple.quarantine "$C"
 
       - name: Upload
         uses: actions/upload-artifact@v4
