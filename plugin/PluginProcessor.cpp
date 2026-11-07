@@ -140,7 +140,7 @@ struct PianoVoice : juce::SynthesiserVoice {
 };
 
 choir::Style styleFromIndex(int i) {
-    return (choir::Style)juce::jlimit(0, (int)choir::Style::Tenore, i);
+    return (choir::Style)juce::jlimit(0, (int)choir::Style::Soviet, i);
 }
 
 const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", "voiceB",

@@ -47,8 +47,8 @@ int main(int argc, char** argv) {
                 const char* names[] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
                                        "contemporary", "gospel", "barbershop", "epic", "partes", "spiritual",
                                        "anglican", "sacredharp", "bulgarian", "georgian", "tintinnabuli",
-                                       "closeharmony", "apop", "tenore"};
-                for (int k = 0; k < 20; ++k)
+                                       "closeharmony", "apop", "tenore", "soviet"};
+                for (int k = 0; k < 21; ++k)
                     if (b.substr(8) == names[k]) ls.style = (Style)k;
             }
             if (b == "--choir=sab") ls.choir = Choir::SAB;
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
         {"epic", Style::Epic},           {"partes", Style::Partes},         {"spiritual", Style::Spiritual},
         {"anglican", Style::Anglican},   {"sacredharp", Style::SacredHarp}, {"bulgarian", Style::Bulgarian},
         {"georgian", Style::Georgian},   {"tintinnabuli", Style::Tintinnabuli},
-        {"closeharmony", Style::CloseHarmony}, {"apop", Style::AcappellaPop}, {"tenore", Style::Tenore}};
+        {"closeharmony", Style::CloseHarmony}, {"apop", Style::AcappellaPop}, {"tenore", Style::Tenore}, {"soviet", Style::Soviet}};
     if (!styles.count(style)) {
         std::cerr << "unknown style " << style << "\n";
         return 2;

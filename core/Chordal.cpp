@@ -1327,6 +1327,7 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
     if (s.style == Style::CloseHarmony) return finish(arrangeCloseHarmony(an, meta, s));
     if (s.style == Style::AcappellaPop) return finish(arrangeAcappellaPop(an, meta, s));
     if (s.style == Style::Tenore) return finish(arrangeTenore(an, meta, s));
+    if (s.style == Style::Soviet) return finish(arrangeSoviet(an, meta, s));
 
     StyleP st = s.style == Style::Obikhod        ? obikhodStyle()
                 : s.style == Style::Contemporary ? contemporaryStyle()

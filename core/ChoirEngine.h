@@ -50,7 +50,7 @@ extern const char* NAMES[12];
 // the order matters: it is the order of the plug-in's style menu (saved in projects)
 enum class Style { Bach, Obikhod, Gregorian, Znamenny, Byzantine, Renaissance, Contemporary, Gospel, Barbershop, Epic,
                    Partes, Spiritual, Anglican, SacredHarp, Bulgarian, Georgian, Tintinnabuli, CloseHarmony,
-                   AcappellaPop, Tenore };
+                   AcappellaPop, Tenore, Soviet };
 enum class Texture { Unison, Organum4, Organum5 };
 // choir make-up; voice-leading styles follow it, styles with a fixed ensemble keep their own
 enum class Choir { SATB, SSAA, TTBB, SAB, SSA };

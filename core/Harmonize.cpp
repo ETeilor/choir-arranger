@@ -36,7 +36,7 @@ struct HChord {
     }
 };
 
-enum class Family { Functional, Orthodox, Modal, Jazz };
+enum class Family { Functional, Orthodox, Modal, Jazz, Soviet };
 
 Family familyOf(Style s) {
     switch (s) {
@@ -47,12 +47,28 @@ Family familyOf(Style s) {
         case Style::Gospel: case Style::Spiritual: case Style::CloseHarmony: case Style::Barbershop:
         case Style::AcappellaPop: case Style::Contemporary:
             return Family::Jazz;
+        case Style::Soviet: return Family::Soviet;
         default: return Family::Functional;
     }
 }
 
 std::vector<HChord> vocabulary(bool minor, Family f, int level) {
     std::vector<HChord> v;
+    if (f == Family::Soviet) {
+        // the circle of fifths in harmonic minor, and secondary dominants into iv and III
+        if (minor) {
+            v = {{0, "m"}, {5, "m"}, {10, ""}, {3, ""}, {8, ""}, {2, "dim"}, {7, ""}};
+            if (level >= 2) v.push_back({7, "7"});
+            if (level >= 3) v.push_back({0, "7", 5}), v.push_back({10, "7", 3});
+            if (level >= 6) v.push_back({2, "7", 7});
+        } else {
+            v = {{0, ""}, {2, "m"}, {4, "m"}, {5, ""}, {7, ""}, {9, "m"}};
+            if (level >= 2) v.push_back({7, "7"});
+            if (level >= 3) v.push_back({9, "7", 2}), v.push_back({4, "7", 9});
+            if (level >= 5) v.push_back({0, "7", 5});
+        }
+        return v;
+    }
     if (!minor) {
         v = {{0, ""}, {2, "m"}, {4, "m"}, {5, ""}, {7, ""}, {9, "m"}};
         if (f == Family::Functional || f == Family::Jazz) v.push_back({11, "dim"});
@@ -107,6 +123,7 @@ double transition(const HChord& a, const HChord& b, bool minor, Family f, bool a
     if (up == 6) c += 1.0;
     if (f == Family::Orthodox && up == 5 && b.degree == 0 && a.degree == 5) c -= 0.3;   // plagal colour
     if (f == Family::Modal && (up == 2 || up == 10)) c -= 0.2;                          // stepwise roots
+    if (f == Family::Soviet && up == 5) c -= 0.35;                                       // sequences down the fifths
     return c;
 }
 

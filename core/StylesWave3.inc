@@ -602,3 +602,143 @@ Result arrangeTenore(const Analysis& an, const Meta& meta, const Settings& s) {
     (void)meta;
     return res;
 }
+
+// ---- Soviet estrada and film song (Zatsepin, Gladkov, Krylatov, Pauls; Artemyev's vocalise pads)
+// Harmony: harmonic minor with a dominant seventh, the circle-of-fifths sequence, a secondary
+// dominant into iv ("A7 -> Dm"), jazz colours higher up, a major final chord at the top levels.
+std::vector<Chord> sovietHarmony(const std::vector<Chord>& in, int tonic, bool minor, int level) {
+    std::vector<Chord> out;
+    for (size_t i = 0; i < in.size(); ++i) {
+        Chord c = in[i];
+        bool last = i + 1 == in.size();
+        const Chord* nx = last ? nullptr : &in[i + 1];
+        int deg = mod12(c.root - tonic);
+        if (minor && deg == 7 && (c.quality == "m" || c.quality == "")) c.quality = level >= 2 ? "7" : "";
+        if (!minor && deg == 7 && c.quality == "" && level >= 2) c.quality = "7";
+        if (minor && deg == 2 && (c.quality == "dim" || c.quality == "m") && level >= 3) c.quality = "m7b5";
+        if (level >= 5 && !last) {
+            if (c.quality == "m" && deg != 0) c.quality = "m7";
+            else if (c.quality == "" && minor && deg == 10) c.quality = "7";    // VII7 -> III in the sequence
+            else if (c.quality == "" && deg != 7 && deg != 0) c.quality = "maj7";
+            else if (c.quality == "" && deg == 0 && !minor) c.quality = "6";
+        }
+        if (level >= 7 && !last && c.quality == "7") c.quality = "9";
+        if (last && minor && deg == 0 && level >= 6) c.quality = "";            // the major third at the end
+        // secondary dominant before iv / III (minor) or ii / vi (major), in the second half of a long chord
+        if (level >= 4 && nx && c.end - c.start >= 960) {
+            int nd = mod12(nx->root - tonic);
+            bool target = minor ? (nd == 5 || nd == 3) : (nd == 2 || nd == 9);
+            int domRoot = mod12(nx->root + 7);
+            if (target && domRoot != c.root) {
+                int mid = c.end - std::max(480, ((c.end - c.start) / 2 / 480) * 480);
+                if (mid <= c.start) mid = c.start + (c.end - c.start) / 2;
+                Chord d = makeChord(mid, c.end, domRoot, "7", domRoot);
+                c.end = mid;
+                out.push_back(c);
+                out.push_back(d);
+                continue;
+            } else if (target && domRoot == c.root && (c.quality == "m" || c.quality == "" || c.quality == "maj7")) {
+                c.quality = "7";                                                 // the tonic itself turns into V7/iv
+            }
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+Result arrangeSoviet(const Analysis& anIn, const Meta& meta, const Settings& s) {
+    Levels lv = resolveLevels(s, anIn.realMelody());
+    int level = lv.max();
+    Analysis an = anIn;
+    an.chords = sovietHarmony(anIn.chords, an.tonic, an.minor, level);
+    StyleP st = bachStyle();
+    st.keepColors = true;
+    st.colorMap = colorTable();
+    st.keep.insert("m6");
+    int bar = meta.num * TPB * 4 / std::max(1, meta.den);
+    int beat = TPB * 4 / std::max(1, meta.den);
+    // bass rhythm: whole chords, then root-fifth halves ("бас-квинта"), then quarters with a chromatic approach
+    std::vector<int> extra;
+    {
+        Grid g0 = makeGrid(an, st);
+        int step = level >= 6 ? beat : level >= 3 ? std::max(beat, bar / 2) : 0;
+        if (step)
+            for (auto& c : g0.sch)
+                if (&c != &g0.sch.back())                                       // the final chord is held
+                    for (int t = c.start; t < c.end; t += step) extra.push_back(t);
+    }
+    Grid g = makeGrid(an, st, extra);
+    std::set<int> pulse(extra.begin(), extra.end());
+    int sh = fitShift(g.mel, 64, 76);
+    auto sc = scalePcs(g.tonic, g.minor);
+    auto diat = [&](int p) { return std::find(sc.begin(), sc.end(), mod12(p)) != sc.end(); };
+    std::vector<Note> S, A, T, B;
+    int pT = 57, pB = 45, pA = 62;
+    int k = 0;
+    int seconds = 0;
+    for (size_t i = 0; i + 1 < g.ev.size(); ++i) {
+        int a = g.ev[i], b = g.ev[i + 1];
+        const SChord& c = g.chordAt(a);
+        bool chordStart = g.chordStarts.count(a);
+        int m = g.melAt(a);
+        int M = m >= 0 ? m + sh : -1;
+        putNote(S, a, b, M, g.melStarts.count(a));
+        // alto: the second voice of an estrada duet, a third (or sixth) under the tune
+        int Av = -1;
+        if (M >= 0 && level >= 1) {
+            int best = -1;
+            double bs = 1e9;
+            for (int d : {3, 4, 8, 9, 5}) {
+                int p = M - d;
+                if (p < 53 || !diat(p) && !c.has(mod12(p))) continue;
+                double cost = (d == 3 || d == 4 ? 0 : d == 5 ? 2.5 : 0.8) + (c.has(mod12(p)) ? 0 : 1.2) +
+                              0.15 * std::abs(p - pA) + 0.8 * vnoise(s.variant, a, p);
+                if (cost < bs) bs = cost, best = p;
+            }
+            Av = best;
+        }
+        if (Av < 0) Av = nearPc(c.third >= 0 ? c.third : c.root, 55, 69, pA);
+        putNote(A, a, b, Av, g.melStarts.count(a) || chordStart);
+        // tenor: a sustained vocalise on "a", the colour tone of the chord when there is one
+        int Tv = pT;
+        if (chordStart || T.empty()) {
+            std::vector<int> pref;
+            if (level >= 5 && !c.colors.empty()) pref.push_back(c.colors.front());
+            if (c.seventh >= 0) pref.push_back(c.seventh);
+            if (c.third >= 0) pref.push_back(c.third);
+            pref.push_back(c.fifth >= 0 ? c.fifth : c.root);
+            double bs = 1e9;
+            for (size_t q = 0; q < pref.size(); ++q) {
+                int p = nearPc(pref[q], 50, 65, pT);
+                if (Av >= 0 && p >= Av) p -= 12;
+                if (p < 48) continue;
+                double cost = q * 0.8 + 0.3 * std::abs(p - pT);
+                if (cost < bs) bs = cost, Tv = p;
+            }
+        }
+        putNote(T, a, b, Tv, chordStart);
+        // bass
+        int root = nearPc(c.bassPc, 40, 52, pB);
+        int Bv = root;
+        if (pulse.count(a) && !chordStart) {
+            ++k;
+            bool lastBeatOfChord = a + beat >= c.end && &c != &g.sch.back();
+            if (level >= 6 && lastBeatOfChord) {
+                const SChord& nx = *(&c + 1);
+                int target = nearPc(nx.bassPc, 40, 52, root);
+                Bv = target + (target > root ? -1 : 1);                      // chromatic approach
+                ++seconds;
+            } else {
+                Bv = (k % 2 == 1 && c.fifth >= 0) ? nearPc(c.fifth, 38, 52, root - 5) : root;
+            }
+        } else if (chordStart) {
+            k = 0;
+        }
+        putNote(B, a, b, Bv, chordStart || pulse.count(a));
+        pT = Tv, pA = Av, pB = root;
+    }
+    Result res = rbResult(an, g, lv, "Советская эстрада и кино");
+    res.parts = {{"Soprano", S}, {"Alto", A}, {"Tenor", T}, {"Bass", B}};
+    if (seconds) res.figures["хроматические подходы в басу"] = seconds;
+    return res;
+}

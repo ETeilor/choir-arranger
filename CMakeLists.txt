@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 # must come before project(): the oldest macOS the plug-in runs on, and a universal binary
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
-project(ChoirArranger VERSION 0.7.0 LANGUAGES CXX C)
+project(ChoirArranger VERSION 0.7.1 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

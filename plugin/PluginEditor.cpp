@@ -169,7 +169,7 @@ void ChoirEditor::updateStyleControls() {
     // chant and the rule-based textures use one overall level: per-voice knobs are hidden there
     bool chant = st == Style::Gregorian || st == Style::Byzantine || st == Style::Epic || st == Style::SacredHarp ||
                  st == Style::Bulgarian || st == Style::Georgian || st == Style::Tintinnabuli ||
-                 st == Style::CloseHarmony || st == Style::AcappellaPop || st == Style::Tenore;
+                 st == Style::CloseHarmony || st == Style::AcappellaPop || st == Style::Tenore || st == Style::Soviet;
     bool modal = st == Style::Gregorian || st == Style::Byzantine || st == Style::Znamenny;
     octavistsBtn.setVisible(st == Style::Obikhod || st == Style::Znamenny);
     textureLbl.setVisible(st == Style::Gregorian);

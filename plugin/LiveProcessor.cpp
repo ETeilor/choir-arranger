@@ -29,7 +29,7 @@ void LiveProcessor::prepareToPlay(double sr, int) {
 
 choir::Settings LiveProcessor::settings() const {
     choir::Settings s;
-    s.style = (choir::Style)juce::jlimit(0, (int)choir::Style::Tenore, (int)*params.getRawParameterValue("style"));
+    s.style = (choir::Style)juce::jlimit(0, (int)choir::Style::Soviet, (int)*params.getRawParameterValue("style"));
     s.choir = (choir::Choir)juce::jlimit(0, 4, (int)*params.getRawParameterValue("choir"));
     s.amateur = *params.getRawParameterValue("amateur") > 0.5f;
     s.variant = (int)*params.getRawParameterValue("variant");
