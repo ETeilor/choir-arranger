@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure (universal arm64 + x86_64)
-        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
 
       - name: Build
         run: cmake --build build --config Release --target choir_cli ChoirArranger_AU ChoirArranger_VST3 ChoirArranger_Standalone
@@ -29,7 +29,7 @@ jobs:
           auval -v aumu Chor Tlrm
 
       - name: Installer (.pkg and .dmg)
-        run: bash scripts/make_installer.sh 0.4.1
+        run: bash scripts/make_installer.sh 0.4.2
 
       - name: Install the package the way a user does and validate the installed AU
         run: |
@@ -41,6 +41,7 @@ jobs:
           C="/Library/Audio/Plug-Ins/Components/Choir Arranger.component"
           echo "attributes after install:"; xattr -l "$C" || true
           codesign -dv "$C" 2>&1 | head -5
+          echo "minimum macOS of the binary:"; vtool -show-build "$C/Contents/MacOS/Choir Arranger" | grep -E "minos|platform" 
           killall -9 AudioComponentRegistrar || true
           sleep 2
           auval -v aumu Chor Tlrm
