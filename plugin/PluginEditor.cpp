@@ -65,7 +65,11 @@ void DragChip::paint(juce::Graphics& g) {
     g.fillRoundedRectangle(r.removeFromLeft(6.0f).reduced(0, 6), 2.0f);
     g.setColour(ui::text);
     g.setFont(juce::FontOptions(13.0f));
-    g.drawText(label, getLocalBounds().reduced(16, 0), juce::Justification::centredLeft);
+    auto text = label;
+    if (shortLabel.isNotEmpty() &&
+        juce::Font(juce::FontOptions(13.0f)).getStringWidthFloat(label) > getWidth() - 40)
+        text = shortLabel;
+    g.drawText(text, getLocalBounds().reduced(16, 0), juce::Justification::centredLeft);
     g.setColour(ui::textDim);
     g.drawText(juce::String::fromUTF8("⤴"), getLocalBounds().reduced(10, 0), juce::Justification::centredRight);
 }
@@ -83,7 +87,9 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
     setLookAndFeel(&look);
     juce::LookAndFeel::setDefaultLookAndFeel(&look);
 
-    for (auto* b : {&captureBtn, &openBtn, &playBtn, &exportBtn}) addAndMakeVisible(b);
+    for (auto* b : {&captureBtn, &openBtn, &playBtn, &exportBtn, &scoreBtn}) addAndMakeVisible(b);
+    scoreBtn.onClick = [this] { exportScore(); };
+    scoreBtn.setTooltip(U("Партитура для MuseScore, Sibelius, Dorico, Finale"));
     captureBtn.getProperties().set("danger", true);
     captureBtn.setClickingTogglesState(false);
     captureBtn.onClick = [this] { proc.setCapture(!proc.isCapturing()); timerCallback(); };
@@ -102,14 +108,17 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
     label(outOfModeLbl, U("Аккорды вне лада"));
     label(complexityLbl, U("Сложность"));
     label(voicesLbl, U("По голосам (= общая)"));
+    label(soundLbl, U("Звук прослушивания"));
 
-    for (auto* c : {&styleBox, &textureBox, &outOfModeBox}) addAndMakeVisible(c);
-    styleBox.addItemList({U("Хорал Баха"), U("Православный обиход"), U("Григорианский хорал")}, 1);
+    for (auto* c : {&styleBox, &textureBox, &outOfModeBox, &soundBox}) addAndMakeVisible(c);
+    styleBox.addItemList(ChoirProcessor::styleNames(), 1);
+    soundBox.addItemList({U("Пианино"), U("Хор")}, 1);
     textureBox.addItemList({U("Унисон"), U("Органум в кварту"), U("Органум в квинту")}, 1);
     outOfModeBox.addItemList({U("Подменять ладовым"), U("Пропускать")}, 1);
     styleA = std::make_unique<CA>(proc.params, "style", styleBox);
     textureA = std::make_unique<CA>(proc.params, "texture", textureBox);
     outOfModeA = std::make_unique<CA>(proc.params, "outofmode", outOfModeBox);
+    soundA = std::make_unique<CA>(proc.params, "sound", soundBox);
     addAndMakeVisible(octavistsBtn);
     addAndMakeVisible(mixedBtn);
     octA = std::make_unique<BA>(proc.params, "octavists", octavistsBtn);
@@ -137,12 +146,18 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
 
     roll.setEmptyText(
         U("Перетащите сюда MIDI-файл с аккордами\nили нажмите «Захват» и запустите воспроизведение региона на этой дорожке"));
+    roll.makeDragFile = [this] { return proc.writePartFile(-1); };
     addAndMakeVisible(roll);
     allChip = std::make_unique<DragChip>();
     allChip->label = U("Все партии");
     allChip->colour = ui::accent;
     allChip->makeFile = [this] { return proc.writePartFile(-1); };
     addAndMakeVisible(*allChip);
+    scoreChip = std::make_unique<DragChip>();
+    scoreChip->label = U("Ноты");
+    scoreChip->colour = ui::textDim;
+    scoreChip->makeFile = [this] { return proc.writeScoreFile(); };
+    addAndMakeVisible(*scoreChip);
 
     report.setFont(juce::FontOptions(12.5f));
     report.setJustificationType(juce::Justification::topLeft);
@@ -154,13 +169,13 @@ ChoirEditor::ChoirEditor(ChoirProcessor& p) : AudioProcessorEditor(p), proc(p) {
     addAndMakeVisible(sourceLbl);
     hintLbl.setFont(juce::FontOptions(12.0f));
     hintLbl.setColour(juce::Label::textColourId, ui::textDim);
-    hintLbl.setText(juce::String::fromUTF8("Перетащите партию на дорожку в Logic"), juce::dontSendNotification);
+    hintLbl.setText(U("Тяните партию или всю нотную ленту на дорожку"), juce::dontSendNotification);
     addAndMakeVisible(hintLbl);
 
     proc.onResultChanged = [this] { refresh(); };
     setResizable(true, true);
-    setResizeLimits(860, 560, 1800, 1200);
-    setSize(1040, 660);
+    setResizeLimits(940, 600, 1900, 1300);
+    setSize(1120, 700);
     updateStyleControls();
     refresh();
     startTimerHz(30);
@@ -173,18 +188,26 @@ ChoirEditor::~ChoirEditor() {
 }
 
 void ChoirEditor::updateStyleControls() {
-    int st = styleBox.getSelectedItemIndex();
-    octavistsBtn.setVisible(st == 1);
-    textureLbl.setVisible(st == 2);
-    textureBox.setVisible(st == 2);
-    outOfModeLbl.setVisible(st == 2);
-    outOfModeBox.setVisible(st == 2);
-    mixedBtn.setVisible(st == 2);
-    voicesLbl.setVisible(st != 2);          // chant is one line: only the overall knob applies
+    using choir::Style;
+    auto st = (Style)juce::jmax(0, styleBox.getSelectedItemIndex());
+    bool chant = st == Style::Gregorian || st == Style::Byzantine;   // one line: only the overall knob applies
+    bool modal = st == Style::Gregorian || st == Style::Byzantine || st == Style::Znamenny;
+    octavistsBtn.setVisible(st == Style::Obikhod || st == Style::Znamenny);
+    textureLbl.setVisible(st == Style::Gregorian);
+    textureBox.setVisible(st == Style::Gregorian);
+    outOfModeLbl.setVisible(modal);
+    outOfModeBox.setVisible(modal);
+    mixedBtn.setVisible(chant);
+    voicesLbl.setVisible(!chant);
     for (int i = 0; i < 4; ++i) {
-        voice[i].setVisible(st != 2);
-        voiceLbl[i].setVisible(st != 2);
+        voice[i].setVisible(!chant);
+        voiceLbl[i].setVisible(!chant);
     }
+    // barbershop names its voices differently
+    const char* names[4] = {"S", "A", "T", "B"};
+    const char* bb[4] = {"T", "L", "Br", "B"};
+    for (int i = 0; i < 4; ++i)
+        voiceLbl[i].setText(st == Style::Barbershop ? bb[i] : names[i], juce::dontSendNotification);
     resized();
 }
 
@@ -195,6 +218,11 @@ void ChoirEditor::refresh() {
     for (size_t i = 0; i < r.parts.size(); ++i) {
         auto* c = chips.add(new DragChip());
         c->label = juce::String::fromUTF8(r.parts[i].name.c_str());
+        // "Soprano 2" -> "S2", "Baritone" -> "Br"
+        auto words = juce::StringArray::fromTokens(c->label, " ", "");
+        c->shortLabel = words[0].startsWith("Bari") ? juce::String("Br") : words[0].startsWith("Octav") ? juce::String("Oct")
+                                                                                                           : words[0].substring(0, 1);
+        if (words.size() > 1) c->shortLabel << words[1];
         c->colour = ui::partColour(r.parts[i].name);
         int idx = (int)i;
         c->makeFile = [this, idx] { return proc.writePartFile(idx); };
@@ -207,6 +235,8 @@ void ChoirEditor::refresh() {
                                            : juce::String::fromUTF8("Вход: ") + proc.inputSource(),
                       juce::dontSendNotification);
     exportBtn.setEnabled(!r.parts.empty());
+    scoreBtn.setEnabled(!r.parts.empty());
+    scoreChip->setVisible(!r.parts.empty());
     playBtn.setEnabled(!r.parts.empty());
     resized();
     repaint();
@@ -242,13 +272,15 @@ void ChoirEditor::resized() {
     auto b = getLocalBounds();
     auto top = b.removeFromTop(56).reduced(16, 11);
     top.removeFromLeft(210);
-    exportBtn.setBounds(top.removeFromRight(130));
+    scoreBtn.setBounds(top.removeFromRight(132));
     top.removeFromRight(8);
-    playBtn.setBounds(top.removeFromRight(120));
+    exportBtn.setBounds(top.removeFromRight(112));
     top.removeFromRight(8);
-    openBtn.setBounds(top.removeFromRight(130));
+    playBtn.setBounds(top.removeFromRight(104));
     top.removeFromRight(8);
-    captureBtn.setBounds(top.removeFromRight(190));
+    openBtn.setBounds(top.removeFromRight(116));
+    top.removeFromRight(8);
+    captureBtn.setBounds(top.removeFromRight(176));
     sourceLbl.setBounds(top.reduced(8, 0));
 
     auto side = b.removeFromLeft(256).reduced(12, 0).withTrimmedBottom(12).reduced(14, 14);
@@ -263,11 +295,13 @@ void ChoirEditor::resized() {
         textureLbl.setBounds(side.removeFromTop(18));
         textureBox.setBounds(side.removeFromTop(30));
         side.removeFromTop(8);
+    }
+    if (outOfModeBox.isVisible()) {
         outOfModeLbl.setBounds(side.removeFromTop(18));
         outOfModeBox.setBounds(side.removeFromTop(30));
         side.removeFromTop(6);
-        mixedBtn.setBounds(side.removeFromTop(26));
     }
+    if (mixedBtn.isVisible()) mixedBtn.setBounds(side.removeFromTop(26));
     side.removeFromTop(12);
     complexityLbl.setBounds(side.removeFromTop(18));
     complexity.setBounds(side.removeFromTop(118).withSizeKeepingCentre(118, 118));
@@ -278,46 +312,63 @@ void ChoirEditor::resized() {
     for (int i = 0; i < 4; ++i) voice[i].setBounds(row.removeFromLeft(w).withSizeKeepingCentre(52, 52));
     auto lrow = side.removeFromTop(16);
     for (int i = 0; i < 4; ++i) voiceLbl[i].setBounds(lrow.removeFromLeft(w));
+    auto snd = side.removeFromBottom(50);
+    soundLbl.setBounds(snd.removeFromTop(18));
+    soundBox.setBounds(snd.removeFromTop(30));
 
     auto main = b.reduced(4, 0).withTrimmedRight(12).withTrimmedBottom(12);
     auto rep = main.removeFromBottom(proc.result().issues.size() > 2 ? 150 : 118);
     report.setBounds(rep.withTrimmedTop(6));
     auto chipRow = main.removeFromBottom(40).withTrimmedTop(8);
-    int need = 132 + (int)chips.size() * 118 + 230;
+    int need = 132 + (int)chips.size() * 104 + 86 + 300;
     bool hintFits = !proc.result().parts.empty() && chipRow.getWidth() >= need;
     hintLbl.setVisible(hintFits);
-    if (hintFits) hintLbl.setBounds(chipRow.removeFromRight(230));
+    if (scoreChip->isVisible()) {
+        scoreChip->setBounds(chipRow.removeFromRight(86));
+        chipRow.removeFromRight(10);
+    }
+    if (hintFits) hintLbl.setBounds(chipRow.removeFromRight(300));
     if (allChip->isVisible()) {
         allChip->setBounds(chipRow.removeFromLeft(124));
         chipRow.removeFromLeft(8);
     }
+    int cw = chips.isEmpty() ? 104 : juce::jlimit(52, 118, (chipRow.getWidth() - 6 * chips.size()) / chips.size());
     for (auto* c : chips) {
-        c->setBounds(chipRow.removeFromLeft(118));
+        c->setBounds(chipRow.removeFromLeft(cw));
         chipRow.removeFromLeft(6);
     }
     roll.setBounds(main);
 }
 
-bool ChoirEditor::isInterestedInFileDrag(const juce::StringArray& files) {
-    for (auto& f : files)
-        if (f.endsWithIgnoreCase(".mid") || f.endsWithIgnoreCase(".midi")) return true;
-    return false;
+// Any file is welcome: regions dragged from Logic may arrive with an unusual name, or as a file
+// promise that only becomes a real file on drop. The content (MThd header) decides.
+bool ChoirEditor::isInterestedInFileDrag(const juce::StringArray& files) { return !files.isEmpty(); }
+
+void ChoirEditor::showError(const juce::String& err) {
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Choir Arranger", err);
 }
 
 void ChoirEditor::filesDropped(const juce::StringArray& files, int, int) {
     dropHover = false;
-    for (auto& f : files)
-        if (f.endsWithIgnoreCase(".mid") || f.endsWithIgnoreCase(".midi")) {
-            juce::String err;
-            if (!proc.loadMidiFile(juce::File(f), err))
-                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Choir Arranger", err);
-            break;
-        }
     repaint();
+    for (auto& path : files) {
+        juce::File f(path);
+        if (f.isDirectory()) {
+            // a promise folder or a folder of files: take the first MIDI file inside
+            for (auto& c : f.findChildFiles(juce::File::findFiles, true))
+                if (ChoirProcessor::isMidiFile(c)) { f = c; break; }
+        }
+        if (!f.existsAsFile() || !ChoirProcessor::isMidiFile(f)) continue;
+        juce::String err;
+        if (!proc.loadMidiFile(f, err)) showError(err);
+        return;
+    }
+    showError(U("Не нашёл MIDI в том, что перетащили. Если это регион из Logic, "
+                "сделайте Export > Selection as MIDI File или включите «Захват»."));
 }
 
 void ChoirEditor::openFile() {
-    chooser = std::make_unique<juce::FileChooser>(juce::String::fromUTF8("Файл с аккордами"), juce::File(), "*.mid;*.midi");
+    chooser = std::make_unique<juce::FileChooser>(juce::String::fromUTF8("Файл с аккордами"), juce::File(), "*.mid;*.midi;*.smf;*");
     chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                          [this](const juce::FileChooser& fc) {
                              auto f = fc.getResult();
@@ -325,6 +376,19 @@ void ChoirEditor::openFile() {
                              juce::String err;
                              if (!proc.loadMidiFile(f, err))
                                  juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Choir Arranger", err);
+                         });
+}
+
+void ChoirEditor::exportScore() {
+    auto tmp = proc.writeScoreFile();
+    chooser = std::make_unique<juce::FileChooser>(U("Сохранить ноты"),
+                                                  juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                                                      .getChildFile("Choir score.musicxml"),
+                                                  "*.musicxml");
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                         [tmp](const juce::FileChooser& fc) {
+                             auto f = fc.getResult();
+                             if (f != juce::File()) tmp.copyFileTo(f.withFileExtension("musicxml"));
                          });
 }
 

@@ -18,8 +18,16 @@ public:
     void setPlayhead(double ticks) { playhead = ticks; repaint(); }
     void setEmptyText(const juce::String& t) { emptyText = t; repaint(); }
     void paint(juce::Graphics&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { dragging = false; }
+    void mouseEnter(const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit(const juce::MouseEvent&) override { hover = false; repaint(); }
+    std::function<juce::File()> makeDragFile;   // dragging the roll carries all parts out as one .mid
+
+    static constexpr float keyboardWidth = 54.0f;
 
 private:
+    bool hover = false, dragging = false;
     const std::vector<choir::Part>* parts = nullptr;
     const std::vector<choir::Note>* input = nullptr;
     choir::Meta meta;

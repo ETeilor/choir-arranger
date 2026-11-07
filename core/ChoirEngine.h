@@ -47,7 +47,8 @@ Analysis analyse(const std::vector<Note>& notes);
 extern const char* NAMES[12];
 
 // ---------------------------------------------------------------- settings
-enum class Style { Bach, Obikhod, Gregorian };
+// the order matters: it is the order of the plug-in's style menu (saved in projects)
+enum class Style { Bach, Obikhod, Gregorian, Znamenny, Byzantine, Renaissance, Contemporary, Gospel, Barbershop, Epic };
 enum class Texture { Unison, Organum4, Organum5 };
 enum class OutOfMode { Substitute, Skip };
 
@@ -81,6 +82,8 @@ struct Result {
     std::map<std::string, int> figures;
     std::array<int, 4> levels{};         // S A T B
     int melodyShift = 0;
+    int keyFifths = 99;                  // key signature for notation: -7..7 (99 = not set yet)
+    bool keyMinor = false;
     std::vector<Issue> issues;
     std::string error;
     bool ok() const { return error.empty(); }
@@ -88,6 +91,11 @@ struct Result {
 };
 
 Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings& s);
+
+// ---------------------------------------------------------------- notation
+// MusicXML (opens in MuseScore, Sibelius, Dorico, Finale): one staff per part, clefs by voice,
+// ties across bar lines, key signature from the analysis.
+std::string toMusicXml(const Result& r, const Meta& meta, const std::string& title);
 
 // ---------------------------------------------------------------- SMF helpers
 bool readSmf(const std::string& path, std::vector<Note>& notes, Meta& meta, std::string& err);

@@ -44,6 +44,12 @@ public:
     const choir::Meta& meta() const { return meta_; }
     juce::String inputSource() const { return inputSource_; }
     juce::File writePartFile(int partIndex) const;      // -1 = all parts in one file
+    juce::File writeScoreFile() const;                  // MusicXML score in the temp folder
+    juce::String scoreXml() const;
+    juce::String scoreTitle() const;
+    static bool isMidiFile(const juce::File& f);        // by content (MThd), any extension
+    static bool isMidiData(const std::vector<unsigned char>& bytes);
+    static juce::StringArray styleNames();
     std::function<void()> onResultChanged;
 
     // capture
@@ -86,7 +92,7 @@ private:
     std::atomic<bool> previewOn_{false}, killNotes_{false};
     std::atomic<double> previewTicks_{0};
     size_t previewIdx_ = 0;
-    juce::Synthesiser synth_;
+    juce::Synthesiser synth_, piano_;   // choir "aah" and piano; the "sound" parameter picks one
     double sampleRate_ = 44100.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ChoirProcessor)

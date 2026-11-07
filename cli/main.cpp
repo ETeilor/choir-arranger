@@ -1,9 +1,12 @@
 // Command-line front end of the engine: same options as the Python prototype.
-//   choir_cli in.mid out.mid [--style=bach|obikhod|gregorian] [--complexity=4|S0,A5,T5,B7]
+//   choir_cli in.mid out.mid [--style=bach|obikhod|gregorian|znamenny|byzantine|renaissance|
+//                                       contemporary|gospel|barbershop|epic] [--complexity=4|S0,A5,T5,B7]
 //             [--octavists] [--texture=unison|organum4|organum5] [--outofmode=substitute|skip]
 //             [--mixed] [--dump]
+#include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include "../core/ChoirEngine.h"
 
 using namespace choir;
@@ -12,6 +15,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     std::string style = "bach", cx, texture = "unison", policy = "substitute";
     bool octav = false, mixed = false, dump = false;
+    std::string xml;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto val = [&](const char* k) { return a.substr(std::strlen(k)); };
@@ -22,13 +26,23 @@ int main(int argc, char** argv) {
         else if (a == "--octavists") octav = true;
         else if (a == "--mixed") mixed = true;
         else if (a == "--dump") dump = true;
+        else if (a.rfind("--xml=", 0) == 0) xml = val("--xml=");
         else pos.push_back(a);
     }
     if (pos.empty()) {
         std::cerr << "usage: choir_cli in.mid [out.mid] [options]\n";
         return 2;
     }
-    Style st = style == "obikhod" ? Style::Obikhod : style == "gregorian" ? Style::Gregorian : Style::Bach;
+    const std::map<std::string, Style> styles = {
+        {"bach", Style::Bach},           {"obikhod", Style::Obikhod},       {"gregorian", Style::Gregorian},
+        {"znamenny", Style::Znamenny},   {"byzantine", Style::Byzantine},   {"renaissance", Style::Renaissance},
+        {"contemporary", Style::Contemporary}, {"gospel", Style::Gospel},  {"barbershop", Style::Barbershop},
+        {"epic", Style::Epic}};
+    if (!styles.count(style)) {
+        std::cerr << "unknown style " << style << "\n";
+        return 2;
+    }
+    Style st = styles.at(style);
     Settings s = Settings::fromSpec(st, cx);
     s.octavists = octav;
     s.mixed = mixed;
@@ -47,6 +61,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (pos.size() > 1) writeSmfFile(pos[1], r.parts, meta);
+    if (!xml.empty()) {
+        FILE* f = std::fopen(xml.c_str(), "wb");
+        if (f) {
+            std::string x = toMusicXml(r, meta, "Choir");
+            std::fwrite(x.data(), 1, x.size(), f);
+            std::fclose(f);
+        }
+    }
     if (dump) {
         std::cout << "ISSUES " << r.issues.size() << "\n";
         for (auto& p : r.parts) {

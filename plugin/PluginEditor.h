@@ -6,7 +6,7 @@
 class DragChip : public juce::Component {
 public:
     std::function<juce::File()> makeFile;
-    juce::String label;
+    juce::String label, shortLabel;   // the short one is used when the chip is narrow
     juce::Colour colour;
     void paint(juce::Graphics&) override;
     void mouseDrag(const juce::MouseEvent&) override;
@@ -43,6 +43,8 @@ private:
     void updateStyleControls();
     void openFile();
     void exportAll();
+    void exportScore();
+    void showError(const juce::String& err);
 
     ChoirProcessor& proc;
     ChoirLook look;
@@ -50,20 +52,21 @@ private:
     using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
-    juce::TextButton captureBtn{U("Захват")}, openBtn{U("Открыть MIDI")}, playBtn{U("Прослушать")}, exportBtn{U("Экспорт .mid")};
-    juce::ComboBox styleBox, textureBox, outOfModeBox;
+    juce::TextButton captureBtn{U("Захват")}, openBtn{U("Открыть MIDI")}, playBtn{U("Прослушать")}, exportBtn{U("Экспорт .mid")},
+        scoreBtn{U("Ноты (MusicXML)")};
+    juce::ComboBox styleBox, textureBox, outOfModeBox, soundBox;
     juce::ToggleButton octavistsBtn{U("Октависты")}, mixedBtn{U("Смешанный хор")};
-    juce::Label styleLbl, textureLbl, outOfModeLbl, complexityLbl, voicesLbl;
+    juce::Label styleLbl, textureLbl, outOfModeLbl, complexityLbl, voicesLbl, soundLbl;
     juce::Slider complexity;
     juce::Slider voice[4];          // S A T B
     juce::Label voiceLbl[4];
-    std::unique_ptr<CA> styleA, textureA, outOfModeA;
+    std::unique_ptr<CA> styleA, textureA, outOfModeA, soundA;
     std::unique_ptr<BA> octA, mixedA;
     std::unique_ptr<SA> complexityA, voiceA[4];
 
     PianoRoll roll;
     juce::OwnedArray<DragChip> chips;
-    std::unique_ptr<DragChip> allChip;
+    std::unique_ptr<DragChip> allChip, scoreChip;
     juce::Label report, sourceLbl, hintLbl;
     std::unique_ptr<juce::FileChooser> chooser;
     bool dropHover = false;

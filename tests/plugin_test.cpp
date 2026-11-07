@@ -100,27 +100,54 @@ int main(int argc, char** argv) {
     auto all = p.writePartFile(-1);
     expect(all.existsAsFile(), "файл всех партий: " + all.getFileName());
 
-    // 5. preview audio
-    p.setPreview(true);
-    float peak = 0;
-    int blocks = 0;
-    juce::MidiBuffer mo;
-    while (p.isPreviewing() && blocks < 20000) {
-        p.processBlock(buf, mo);
-        peak = std::max(peak, buf.getMagnitude(0, 512));
-        ++blocks;
+    // 5. preview audio: piano (default) and choir
+    for (int snd = 0; snd < 2; ++snd) {
+        p.params.getParameter("sound")->setValueNotifyingHost((float)snd);
+        p.setPreview(true);
+        float peak = 0;
+        int blocks = 0;
+        juce::MidiBuffer mo;
+        while (p.isPreviewing() && blocks < 20000) {
+            p.processBlock(buf, mo);
+            peak = std::max(peak, buf.getMagnitude(0, 512));
+            ++blocks;
+        }
+        expect(peak > 0.01f && peak < 1.0f, juce::String(snd ? "хор" : "пианино") + ": прослушивание звучит, пик " + juce::String(peak, 3));
+        expect(!p.isPreviewing(), "прослушивание само остановилось в конце");
     }
-    expect(peak > 0.01f && peak < 1.0f, "прослушивание звучит, пик " + juce::String(peak, 3));
-    expect(!p.isPreviewing(), "прослушивание само остановилось в конце");
+    p.params.getParameter("sound")->setValueNotifyingHost(0.0f);
+
+    // 5b. notation and file detection
+    auto score = p.writeScoreFile();
+    auto xml = juce::XmlDocument::parse(score);
+    expect(xml != nullptr && xml->hasTagName("score-partwise") &&
+               xml->getChildByName("part-list")->getNumChildElements() == (int)p.result().parts.size(),
+           "ноты MusicXML: " + score.getFileName());
+    auto odd = outDir.getChildFile("region_without_extension");
+    all.copyFileTo(odd);
+    expect(ChoirProcessor::isMidiFile(odd) && !ChoirProcessor::isMidiFile(score), "MIDI узнаётся по содержимому");
+    juce::String e2;
+    expect(p.loadMidiFile(odd, e2), "файл без расширения загружен");
+    expect(p.loadMidiFile(input, e2), "вход возвращён");
 
     // 6. editor snapshots, one per style
-    const char* tags[3] = {"bach", "obikhod", "gregorian"};
-    for (int st = 0; st < 3; ++st) {
+    const char* tags[10] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
+                            "contemporary", "gospel", "barbershop", "epic"};
+    for (int st = 0; st < 10; ++st) {
         p.params.getParameter("style")->setValueNotifyingHost(p.params.getParameter("style")->convertTo0to1((float)st));
         if (st == 2) p.params.getParameter("texture")->setValueNotifyingHost(p.params.getParameter("texture")->convertTo0to1(1));
         pump(200);
+        expect(p.result().ok() && !p.result().parts.empty(), juce::String("стиль ") + tags[st] + ": " +
+               juce::String((int)p.result().parts.size()) + " партий " + juce::String::fromUTF8(p.result().error.c_str()));
+        auto x = juce::XmlDocument::parse(p.scoreXml());
+        expect(x != nullptr, juce::String("ноты для ") + tags[st]);
+        if (st == 6) {   // play halfway so the keyboard lights up in the snapshot
+            p.setPreview(true);
+            juce::MidiBuffer mo;
+            for (int i = 0; i < 300; ++i) p.processBlock(buf, mo);
+        }
         std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
-        ed->setSize(1040, 660);
+        ed->setSize(1120, 700);
         pump(100);
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
         auto out = outDir.getChildFile(juce::String("ui_") + tags[st] + ".png");
@@ -128,10 +155,11 @@ int main(int argc, char** argv) {
         juce::FileOutputStream os(out);
         juce::PNGImageFormat().writeImageToStream(img, os);
         expect(out.getSize() > 1000, "снимок интерфейса " + out.getFileName());
+        p.setPreview(false);
     }
     ChoirProcessor empty;
     std::unique_ptr<juce::AudioProcessorEditor> ed(empty.createEditor());
-    ed->setSize(1040, 660);
+    ed->setSize(1120, 700);
     pump(100);
     auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
     auto out = outDir.getChildFile("ui_empty.png");

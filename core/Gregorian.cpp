@@ -298,14 +298,14 @@ std::vector<int> durations(int n, int units) {
 
 std::vector<Note> renderSpans(const std::vector<std::pair<int, int>>& spans, const std::vector<int>& anchors,
                               int level, const std::vector<int>& scale, int lo, int hi, int rec,
-                              const std::vector<PRole>* roles) {
+                              const std::vector<PRole>* roles, double densMax = 0.9, double densPerLevel = 0.09) {
     std::vector<Note> notes;
     for (size_t i = 0; i < spans.size(); ++i) {
         int st = spans[i].first, en = spans[i].second;
         int units = std::max(1, (en - st) / E);
         bool last = i == spans.size() - 1;
         bool contiguous = !last && spans[i + 1].first == en;
-        double dens = std::min(0.9, 0.09 * level);
+        double dens = std::min(densMax, densPerLevel * level);
         int n = last ? 1 : std::max(1, std::min(units, 1 + (int)std::nearbyint(dens * (units - 1))));
         int target = contiguous ? anchors[i + 1] : -1;
         auto line = fillSpan(anchors[i], target, n, scale, lo, hi, rec, (int)i);
@@ -420,48 +420,54 @@ std::vector<Note> organum(const std::vector<Note>& chant, const Col& col, Textur
     return merged;
 }
 
-}  // namespace
 
-Result arrangeGregorian(const Analysis& an, const Meta& meta, const Settings& s) {
-    Result res;
-    Levels lv = resolveLevels(s, false);
-    int level = lv.v[VS];
+// The chant shared by the Gregorian, Byzantine and Znamenny styles: mode, modal chords, anchors,
+// the line itself in the men's register.
+struct Chant {
+    std::vector<Note> notes;
+    Col col{};
+    int t = 0, off = 2, finalis = 0, finP = 48, rec = 0, ambLo = 0, ambHi = 0;
+    ModeInfo mi{};
+    bool plagal = false;
+    std::set<int> kept;
+    std::vector<MChord> mch;
+};
+
+Chant composeChant(const Analysis& an, OutOfMode policy, int level, double densMax = 0.9, double densPerLevel = 0.09) {
+    Chant ch;
     const auto& chords = an.chords;
     bool real = an.realMelody();
-    int finalis = real ? an.melody.back().pitch % 12 : chords.back().root;
-    int t = 0, off = 2;
-    findMode(chords, an.melody, finalis, t, off);
-    Col col = collection(t);
-    ModeInfo mi;
-    modeInfo(off, mi);
-    auto mch = modalChords(chords, col, s.outOfMode);
-    int finP = 48;
+    ch.finalis = real ? an.melody.back().pitch % 12 : chords.back().root;
+    findMode(chords, an.melody, ch.finalis, ch.t, ch.off);
+    ch.col = collection(ch.t);
+    modeInfo(ch.off, ch.mi);
+    ch.mch = modalChords(chords, ch.col, policy);
+    ch.finP = 48;
     for (int p = 48; p <= 59; ++p)
-        if (p % 12 == finalis) {
-            finP = p;
+        if (p % 12 == ch.finalis) {
+            ch.finP = p;
             break;
         }
-    std::vector<Note> chant;
-    bool plagal = false;
-    int rec, ambLo, ambHi;
-    std::set<int> kept;
+    const Col& col = ch.col;
+    const ModeInfo& mi = ch.mi;
+    int finP = ch.finP;
     if (real) {
         auto pitches = placeMelody(an.melody, col, finP);
         int mn = *std::min_element(pitches.begin(), pitches.end());
         int mx = *std::max_element(pitches.begin(), pitches.end());
-        plagal = mn < finP - 2;
-        rec = finP + (plagal ? mi.recP : mi.recA);
-        ambLo = std::min(mn, plagal ? finP - 5 : finP - 2);
-        ambHi = std::max(mx, plagal ? finP + 7 : finP + 12);
-        auto scale = scalePitches(col, ambLo - 2, ambHi + 2);
+        ch.plagal = mn < finP - 2;
+        ch.rec = finP + (ch.plagal ? mi.recP : mi.recA);
+        ch.ambLo = std::min(mn, ch.plagal ? finP - 5 : finP - 2);
+        ch.ambHi = std::max(mx, ch.plagal ? finP + 7 : finP + 12);
+        auto scale = scalePitches(col, ch.ambLo - 2, ch.ambHi + 2);
         std::vector<std::pair<int, int>> spans;
         for (auto& n : an.melody) spans.push_back({n.start, n.end});
-        chant = renderSpans(spans, pitches, level, scale, ambLo, ambHi, rec, nullptr);
+        ch.notes = renderSpans(spans, pitches, level, scale, ch.ambLo, ch.ambHi, ch.rec, nullptr, densMax, densPerLevel);
         for (size_t k = 0; k + 1 < pitches.size(); ++k)
-            if (std::abs(pitches[k + 1] - pitches[k]) > 7) kept.insert(an.melody[k + 1].start);
+            if (std::abs(pitches[k + 1] - pitches[k]) > 7) ch.kept.insert(an.melody[k + 1].start);
     } else {
         std::vector<int> topPcs;
-        for (auto& c : mch) {
+        for (auto& c : ch.mch) {
             int tp = -1;
             for (auto& n : an.melody)
                 if (n.start <= c.start && c.start < n.end) {
@@ -470,18 +476,21 @@ Result arrangeGregorian(const Analysis& an, const Meta& meta, const Settings& s)
                 }
             topPcs.push_back(tp);
         }
-        rec = finP + mi.recA;
-        ambLo = finP - 2, ambHi = finP + 12;
-        auto scale = scalePitches(col, ambLo - 2, ambHi + 2);
+        ch.rec = finP + mi.recA;
+        ch.ambLo = finP - 2, ch.ambHi = finP + 12;
+        auto scale = scalePitches(col, ch.ambLo - 2, ch.ambHi + 2);
         std::vector<PRole> roles;
-        auto anchors = chooseAnchors(mch, topPcs, finP, rec, ambLo, ambHi, roles);
+        auto anchors = chooseAnchors(ch.mch, topPcs, finP, ch.rec, ch.ambLo, ch.ambHi, roles);
         std::vector<std::pair<int, int>> spans;
-        for (auto& c : mch) spans.push_back({c.start, c.end});
-        chant = renderSpans(spans, anchors, level, scale, ambLo, ambHi, rec, &roles);
+        for (auto& c : ch.mch) spans.push_back({c.start, c.end});
+        ch.notes = renderSpans(spans, anchors, level, scale, ch.ambLo, ch.ambHi, ch.rec, &roles, densMax, densPerLevel);
     }
+    return ch;
+}
 
-    // register: men in unison sound best around G3; leave room for the organal voice below
-    int gap = s.texture == Texture::Unison ? 0 : s.texture == Texture::Organum4 ? 5 : 7;
+// register: men in unison sound best around G3; leave room for a lower voice `gap` below
+void placeRegister(Chant& ch, int gap) {
+    auto& chant = ch.notes;
     int loC = 999, hiC = -999;
     long long num = 0, den = 0;
     for (auto& n : chant) {
@@ -500,22 +509,58 @@ Result arrangeGregorian(const Analysis& an, const Meta& meta, const Settings& s)
     }
     if (best) {
         for (auto& n : chant) n.pitch += best;
-        finP += best;
-        rec += best;
+        ch.finP += best;
+        ch.rec += best;
     }
+}
 
+int fifthsOfCol(int t) {   // the white-key collection moved by t = the major key on t
+    static const int f[12] = {0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5};
+    return f[mod12(t)];
+}
+
+void chantIssues(const Chant& ch, const Meta& meta, std::vector<Issue>& issues) {
+    const auto& chant = ch.notes;
     for (size_t q = 0; q + 1 < chant.size(); ++q) {
         int d = std::abs(chant[q + 1].pitch - chant[q].pitch);
-        if (d == 6) res.issues.push_back({issuePos(chant[q].start, meta.num), "мелодический тритон"});
+        if (d == 6) issues.push_back({issuePos(chant[q].start, meta.num), "мелодический тритон"});
         else if (d > 7 && d != 12)
-            res.issues.push_back({issuePos(chant[q].start, meta.num),
-                                  "скачок " + std::to_string(d) + " полутонов" +
-                                      (kept.count(chant[q + 1].start) ? " (скачок вашей мелодии, сложить его в квинту не удалось)" : "")});
+            issues.push_back({issuePos(chant[q].start, meta.num),
+                              "скачок " + std::to_string(d) + " полутонов" +
+                                  (ch.kept.count(chant[q + 1].start) ? " (скачок вашей мелодии, сложить его в квинту не удалось)" : "")});
     }
     for (auto& n : chant)
-        if (!col[mod12(n.pitch)]) res.issues.push_back({issuePos(n.start, meta.num), "звук вне лада"});
-    if (mod12(chant.back().pitch) != mod12(finP))
-        res.issues.push_back({issuePos(chant.back().start, meta.num), "последний звук не финалис"});
+        if (!ch.col[mod12(n.pitch)]) issues.push_back({issuePos(n.start, meta.num), "звук вне лада"});
+    if (mod12(chant.back().pitch) != mod12(ch.finP))
+        issues.push_back({issuePos(chant.back().start, meta.num), "последний звук не финалис"});
+}
+
+std::vector<std::string> modalChordNames(const Chant& ch) {
+    std::vector<std::string> out;
+    for (auto& c : ch.mch) {
+        std::string x = c.src;
+        if (c.changed) x += std::string("→") + NAMES[c.root] + (ch.col[(c.root + 4) % 12] ? "" : "m");
+        out.push_back(x);
+    }
+    return out;
+}
+
+}  // namespace
+
+Result arrangeGregorian(const Analysis& an, const Meta& meta, const Settings& s) {
+    Result res;
+    Levels lv = resolveLevels(s, false);
+    int level = lv.v[VS];
+    Chant chs = composeChant(an, s.outOfMode, level);
+    int gap = s.texture == Texture::Unison ? 0 : s.texture == Texture::Organum4 ? 5 : 7;
+    placeRegister(chs, gap);
+    std::vector<Note>& chant = chs.notes;
+    const Col& col = chs.col;
+    int finP = chs.finP;
+    bool plagal = chs.plagal;
+    const ModeInfo& mi = chs.mi;
+    int finalis = chs.finalis;
+    chantIssues(chs, meta, res.issues);
 
     std::vector<Note> low;
     if (s.texture == Texture::Unison)
@@ -539,13 +584,158 @@ Result arrangeGregorian(const Analysis& an, const Meta& meta, const Settings& s)
     const char* tex = s.texture == Texture::Unison ? "унисон" : s.texture == Texture::Organum4 ? "органум в кварту" : "органум в квинту";
     res.styleLabel = std::string("Григорианский хорал, ") + tex;
     res.keyLabel = std::string(plagal ? mi.plag : mi.auth) + " лад, " + mi.name + " от " + NAMES[finalis];
-    for (auto& c : mch) {
-        std::string x = c.src;
-        if (c.changed) x += std::string("→") + NAMES[c.root] + (col[(c.root + 4) % 12] ? "" : "m");
-        res.chords.push_back(x);
-    }
+    res.chords = modalChordNames(chs);
     res.figures["нот в напеве"] = (int)chant.size();
     res.levels = {level, level, level, level};
+    res.keyFifths = fifthsOfCol(chs.t);
+    return res;
+}
+
+namespace {
+
+// a pitch of class pc in [lo, hi], nearest to `prev`
+int nearPc(int pc, int lo, int hi, int prev) {
+    int best = -1;
+    for (int p = lo; p <= hi; ++p)
+        if (mod12(p) == pc && (best < 0 || std::abs(p - prev) < std::abs(best - prev))) best = p;
+    return best;
+}
+
+std::vector<Note> mergeRepeats(const std::vector<Note>& in) {
+    std::vector<Note> out;
+    for (auto& n : in) {
+        if (!out.empty() && out.back().pitch == n.pitch && out.back().end == n.start) out.back().end = n.end;
+        else out.push_back(n);
+    }
+    return out;
+}
+
+const MChord& modalAt(const Chant& ch, int t) {
+    for (auto& c : ch.mch)
+        if (c.start <= t && t < c.end) return c;
+    return ch.mch.back();
+}
+
+bool consonant(int a, int b) {
+    int iv = std::abs(a - b) % 12;
+    return iv == 0 || iv == 3 || iv == 4 || iv == 5 || iv == 7 || iv == 8 || iv == 9;
+}
+
+}  // namespace
+
+// Znamenny chant harmonised (Kastalsky, Rachmaninov): the chant in the tenors and, an octave
+// higher, in the sopranos; an under-voice (podgolosok) in thirds and sixths in the altos;
+// the bass on the roots of the modal chords, holding the finalis as a pedal; parallel fifths
+// and octaves are part of the style. Byzantine chant: the melody over an ison (drone) that
+// follows the support of the chant.
+Result arrangeModal(const Analysis& an, const Meta& meta, const Settings& s) {
+    Result res;
+    Levels lv = resolveLevels(s, false);
+    int level = lv.v[VS];
+    bool zn = s.style == Style::Znamenny;
+    Chant chs = zn ? composeChant(an, s.outOfMode, level, 0.5, 0.05) : composeChant(an, s.outOfMode, level);
+    placeRegister(chs, zn ? 0 : 7);
+    const auto& chant = chs.notes;
+    chantIssues(chs, meta, res.issues);
+    res.keyFifths = fifthsOfCol(chs.t);
+    res.chords = modalChordNames(chs);
+    res.levels = {level, level, level, level};
+    res.figures["нот в напеве"] = (int)chant.size();
+    std::string mode = std::string(chs.plagal ? chs.mi.plag : chs.mi.auth) + " лад, " + chs.mi.name + " от " + NAMES[chs.finalis];
+
+    if (!zn) {
+        // ison: the finalis, or (higher on the knob) the root of the modal chord when it agrees
+        // with every chant note above it
+        std::vector<Note> ison;
+        int prev = chs.finP - 12;
+        for (auto& c : chs.mch) {
+            int lowC = 999;
+            std::vector<int> above;
+            for (auto& n : chant)
+                if (n.start < c.end && n.end > c.start) {
+                    lowC = std::min(lowC, n.pitch);
+                    if (n.start <= c.start || n.start % 480 == 0) above.push_back(n.pitch);   // the supporting notes
+                }
+            int pc = chs.finalis;
+            if (level >= 3) {
+                bool ok = true;
+                for (int p : above) ok = ok && consonant(p, c.root);
+                if (ok) pc = c.root;
+            }
+            int hi = std::min(60, lowC - 3);
+            int p = nearPc(pc, 41, hi, prev);
+            if (p < 0) p = nearPc(pc, 41, 60, prev);
+            if (p > lowC) p = lowC;
+            ison.push_back(Note{c.start, c.end, p, 80});
+            prev = p;
+        }
+        ison = mergeRepeats(ison);
+        if (s.mixed) {
+            Part sp{"Soprano", {}}, ap{"Alto", {}};
+            for (auto& n : chant) sp.notes.push_back(Note{n.start, n.end, n.pitch + 12, n.vel});
+            for (auto& n : ison) ap.notes.push_back(Note{n.start, n.end, n.pitch + 12, n.vel});
+            res.parts.push_back(sp);
+            res.parts.push_back(ap);
+        }
+        res.parts.push_back({"Tenor", chant});
+        res.parts.push_back({"Ison", ison});
+        res.styleLabel = "Византийский напев с исоном (диатоническое приближение)";
+        res.keyLabel = mode;
+        return res;
+    }
+
+    // znamenny harmonisation
+    std::vector<Note> sop, alto, bass;
+    int prevA = chs.finP + 4 + 12, prevB = chs.finP - 12;
+    int lastBassPc = -1;
+    for (auto& n : chant) {
+        sop.push_back(Note{n.start, n.end, n.pitch + 12, n.vel});
+        const MChord& c = modalAt(chs, n.start);
+        bool onBeat = n.start % 480 == 0;
+        int best = -1;
+        double bs = 1e9;
+        for (int p = 55; p <= 72; ++p) {
+            int pc = mod12(p), iv = p - n.pitch;
+            if (p >= n.pitch + 12) continue;                       // stays under the soprano
+            bool chordTone = c.pcs.count(pc) > 0;
+            if (!chordTone && (onBeat || !chs.col[pc])) continue;
+            double sc;
+            if (iv == 3 || iv == 4) sc = 0;                       // a third above the chant
+            else if (iv == 8 || iv == 9) sc = 1.0;                // a sixth
+            else if (iv == 7 || iv == 5) sc = 2.5;
+            else continue;
+            if (!chordTone) sc += 1.0;
+            sc += 0.3 * std::abs(p - prevA);
+            if (sc < bs) bs = sc, best = p;
+        }
+        if (best < 0) best = nearPc(*c.pcs.begin(), 55, std::min(72, n.pitch + 11), prevA);
+        if (best < 0) best = n.pitch + 7;
+        alto.push_back(Note{n.start, n.end, best, n.vel});
+        prevA = best;
+    }
+    for (auto& c : chs.mch) {
+        int lowC = 999;
+        for (auto& n : chant)
+            if (n.start < c.end && n.end > c.start) lowC = std::min(lowC, n.pitch);
+        int pc = c.root;
+        if (level >= 2 && c.pcs.count(chs.finalis) && lastBassPc == chs.finalis) pc = chs.finalis;   // pedal
+        int p = nearPc(pc, 41, std::min(55, lowC - 3), prevB);
+        if (p < 0) p = nearPc(pc, 41, 55, prevB);
+        bass.push_back(Note{c.start, c.end, p, 80});
+        prevB = p;
+        lastBassPc = pc;
+    }
+    alto = mergeRepeats(alto);
+    bass = mergeRepeats(bass);
+    res.parts = {{"Soprano", sop}, {"Alto", alto}, {"Tenor", chant}, {"Bass", bass}};
+    if (s.octavists) {
+        Part oc{"Octavists", {}};
+        for (auto& n : bass)
+            if (n.pitch - 12 >= 29) oc.notes.push_back(Note{n.start, n.end, n.pitch - 12, n.vel});
+        res.parts.push_back(oc);
+    }
+    res.styleLabel = "Знаменный распев (гармонизация)";
+    res.keyLabel = mode;
     return res;
 }
 

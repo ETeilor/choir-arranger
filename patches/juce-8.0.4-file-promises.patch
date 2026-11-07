@@ -1,0 +1,77 @@
+diff --git a/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm b/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
+index 86ea738..57be2bd 100644
+--- a/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
++++ b/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
+@@ -1486,12 +1486,72 @@ public:
+         else
+             dragInfo.files = getDroppedFiles (pasteboard, contentType);
+ 
++        // Choir Arranger patch: generic file promises (Logic Pro regions and other apps that
++        // write the file only when it is dropped). While hovering, report a placeholder file so
++        // the target can accept; on drop, receive the real file and deliver it asynchronously.
++        if (dragInfo.files.isEmpty() && contentType != NSPasteboardTypeString
++             && [[pasteboard types] containsObject: (NSString*) kPasteboardTypeFileURLPromise])
++            return receivePromisedFiles (callback, sender, pasteboard, dragInfo);
++
+         if (! dragInfo.isEmpty())
+             return (this->*callback) (dragInfo);
+ 
+         return false;
+     }
+ 
++    BOOL receivePromisedFiles (bool (ComponentPeer::* callback) (const DragInfo&), id <NSDraggingInfo>,
++                               NSPasteboard* pasteboard, ComponentPeer::DragInfo dragInfo)
++    {
++        if (callback != &ComponentPeer::handleDragDrop)
++        {
++            dragInfo.files.add ("promised-file.mid");
++            return (this->*callback) (dragInfo);
++        }
++
++        NSArray* receivers = [pasteboard readObjectsForClasses: @[[NSFilePromiseReceiver class]] options: nil];
++
++        if (receivers == nil || [receivers count] == 0)
++            return false;
++
++        const auto dir = File::getSpecialLocation (File::tempDirectory)
++                             .getChildFile ("JuceDroppedPromises")
++                             .getChildFile (String (Time::currentTimeMillis()));
++        dir.createDirectory();
++        NSURL* dest = [NSURL fileURLWithPath: juceStringToNS (dir.getFullPathName()) isDirectory: YES];
++
++        static NSOperationQueue* queue = [[NSOperationQueue alloc] init];
++        WeakReference<Component> target (&component);
++        const auto position = dragInfo.position;
++
++        for (NSFilePromiseReceiver* receiver in receivers)
++        {
++            [receiver receivePromisedFilesAtDestination: dest
++                                                options: @{}
++                                         operationQueue: queue
++                                                 reader: ^(NSURL* fileURL, NSError* error)
++            {
++                if (error != nil || fileURL == nil)
++                    return;
++
++                const auto path = nsStringToJuce ([fileURL path]);
++
++                MessageManager::callAsync ([target, path, position]
++                {
++                    if (auto* c = target.get())
++                        if (auto* peer = c->getPeer())
++                        {
++                            ComponentPeer::DragInfo info;
++                            info.position = position;
++                            info.files.add (path);
++                            peer->handleDragDrop (info);
++                        }
++                });
++            }];
++        }
++
++        return true;
++    }
++
+     StringArray getDroppedFiles (NSPasteboard* pasteboard, NSString* contentType)
+     {
+         StringArray files;

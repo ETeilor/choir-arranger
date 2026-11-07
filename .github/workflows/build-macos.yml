@@ -29,7 +29,7 @@ jobs:
           auval -v aumu Chor Tlrm
 
       - name: Installer (.pkg and .dmg)
-        run: bash scripts/make_installer.sh 0.4.2
+        run: bash scripts/make_installer.sh 0.5.0
 
       - name: Install the package the way a user does and validate the installed AU
         run: |

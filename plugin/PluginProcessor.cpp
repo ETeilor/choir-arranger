@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "PianoRoll.h"
+#include <cstring>
 
 namespace {
 
@@ -67,8 +68,78 @@ struct AahVoice : juce::SynthesiserVoice {
     juce::ADSR env;
 };
 
+// ---------------------------------------------------------------- preview voice (piano)
+// additive piano: slightly inharmonic partials, each decaying on its own, upper partials faster,
+// two detuned "strings" per partial and a damper release on note-off.
+struct PianoVoice : juce::SynthesiserVoice {
+    using juce::SynthesiserVoice::renderNextBlock;
+    bool canPlaySound(juce::SynthesiserSound* s) override { return dynamic_cast<AahSound*>(s) != nullptr; }
+
+    void startNote(int note, float velocity, juce::SynthesiserSound*, int) override {
+        const double sr = getSampleRate();
+        double f0 = juce::MidiMessage::getMidiNoteInHertz(note);
+        double B = 0.00012 * std::pow(2.0, (note - 60) / 24.0);          // inharmonicity grows up the keyboard
+        double base = 0.55 + 0.9 * std::pow(2.0, (60 - note) / 18.0);      // seconds of sustain at the fundamental
+        double bright = 0.6 + 0.8 * velocity;
+        float norm = 0;
+        for (int k = 0; k < kH; ++k) {
+            int h = k + 1;
+            double fr = h * f0 * std::sqrt(1 + B * h * h);
+            inc[k] = juce::MathConstants<double>::twoPi * fr / sr;
+            inc2[k] = inc[k] * 1.0007;
+            ph[k] = ph2[k] = 0;
+            float a = fr < sr / 2 - 500 ? (float)(std::pow(h, -1.0 - 0.6 / bright) * (h == 1 ? 1.0 : 0.8)) : 0.0f;
+            if (fr > 5000) a *= (float)std::exp(-(fr - 5000) / 3000);
+            amp[k] = a;
+            norm += a;
+            double tau = base / (1 + 0.35 * (h - 1));
+            decay[k] = (float)std::exp(-1.0 / (tau * sr));
+            lvl[k] = 1.0f;
+        }
+        if (norm > 0) for (float& a : amp) a /= norm;
+        gain = 0.32f * velocity;
+        attack = 0;
+        attackInc = 1.0f / (float)(0.003 * sr);
+        release = 1.0f;
+        releaseMul = 1.0f;
+        releaseStep = (float)std::exp(-1.0 / (0.12 * sr));
+    }
+    void stopNote(float, bool allowTail) override {
+        if (allowTail) releaseMul = releaseStep;
+        else clearCurrentNote();
+    }
+    void pitchWheelMoved(int) override {}
+    void controllerMoved(int, int) override {}
+    void renderNextBlock(juce::AudioBuffer<float>& out, int start, int num) override {
+        if (!isVoiceActive()) return;
+        for (int i = 0; i < num; ++i) {
+            float s = 0;
+            for (int k = 0; k < kH; ++k) {
+                if (amp[k] == 0) continue;
+                s += amp[k] * lvl[k] * (float)(std::sin(ph[k]) + 0.6 * std::sin(ph2[k]));
+                ph[k] += inc[k];
+                ph2[k] += inc2[k];
+                lvl[k] *= decay[k];
+            }
+            if (attack < 1) attack = std::min(1.0f, attack + attackInc);
+            release *= releaseMul;
+            float v = s * gain * attack * release * 0.62f;
+            for (int ch = 0; ch < out.getNumChannels(); ++ch) out.addSample(ch, start + i, v);
+            if (release < 0.0005f || lvl[0] < 0.0005f) { clearCurrentNote(); break; }
+        }
+        for (int k = 0; k < kH; ++k) {
+            ph[k] = std::fmod(ph[k], juce::MathConstants<double>::twoPi);
+            ph2[k] = std::fmod(ph2[k], juce::MathConstants<double>::twoPi);
+        }
+    }
+    static constexpr int kH = 14;
+    double inc[kH]{}, inc2[kH]{}, ph[kH]{}, ph2[kH]{};
+    float amp[kH]{}, decay[kH]{}, lvl[kH]{};
+    float gain = 0.1f, attack = 0, attackInc = 0.01f, release = 1, releaseMul = 1, releaseStep = 0.999f;
+};
+
 choir::Style styleFromIndex(int i) {
-    return i == 1 ? choir::Style::Obikhod : i == 2 ? choir::Style::Gregorian : choir::Style::Bach;
+    return (choir::Style)juce::jlimit(0, (int)choir::Style::Epic, i);
 }
 
 const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", "voiceB",
@@ -77,11 +148,18 @@ const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", 
 }  // namespace
 
 // ---------------------------------------------------------------- setup
+juce::StringArray ChoirProcessor::styleNames() {
+    // same order as choir::Style
+    return {U("Хорал Баха"), U("Православный обиход"), U("Григорианский хорал"), U("Знаменный распев (гармонизация)"),
+            U("Византийский напев с исоном"), U("Ренессансная полифония"), U("Contemporary (Уитакр, Лауридсен)"),
+            U("Госпел"), U("Барбершоп"), U("Кинематографический эпик")};
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {
     using namespace juce;
     AudioProcessorValueTreeState::ParameterLayout l;
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"style", 1}, "Style",
-                                                 StringArray{U("Хорал Баха"), U("Православный обиход"), U("Григорианский хорал")}, 0));
+                                                 styleNames(), 0));
     l.add(std::make_unique<AudioParameterInt>(ParameterID{"complexity", 1}, "Complexity", 0, 10, 4));
     auto voiceAttr = AudioParameterIntAttributes().withStringFromValueFunction(
         [](int v, int) { return v < 0 ? String::fromUTF8("общая") : String(v); });
@@ -94,6 +172,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"outofmode", 1}, "Out of mode",
                                                  StringArray{U("Подменять ладовым"), U("Пропускать")}, 0));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{"mixed", 1}, "Mixed choir", false));
+    l.add(std::make_unique<AudioParameterChoice>(ParameterID{"sound", 1}, "Preview sound",
+                                                 StringArray{U("Пианино"), U("Хор")}, 0));
     return l;
 }
 
@@ -103,6 +183,9 @@ ChoirProcessor::ChoirProcessor()
     for (auto* id : PARAM_IDS) params.addParameterListener(id, this);
     for (int i = 0; i < 24; ++i) synth_.addVoice(new AahVoice());
     synth_.addSound(new AahSound());
+    for (int i = 0; i < 32; ++i) piano_.addVoice(new PianoVoice());
+    piano_.addSound(new AahSound());
+    params.addParameterListener("sound", this);
 }
 
 void ChoirProcessor::handleAsyncUpdate() {
@@ -115,6 +198,7 @@ void ChoirProcessor::handleAsyncUpdate() {
 
 ChoirProcessor::~ChoirProcessor() {
     for (auto* id : PARAM_IDS) params.removeParameterListener(id, this);
+    params.removeParameterListener("sound", this);
     cancelPendingUpdate();
 }
 
@@ -126,11 +210,18 @@ bool ChoirProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 void ChoirProcessor::prepareToPlay(double sr, int) {
     sampleRate_ = sr;
     synth_.setCurrentPlaybackSampleRate(sr);
+    piano_.setCurrentPlaybackSampleRate(sr);
 }
 
 juce::AudioProcessorEditor* ChoirProcessor::createEditor() { return new ChoirEditor(*this); }
 
-void ChoirProcessor::parameterChanged(const juce::String&, float) { triggerAsyncUpdate(); }
+void ChoirProcessor::parameterChanged(const juce::String& id, float) {
+    if (id == "sound") {
+        killNotes_ = true;   // the other instrument takes over from the next note
+        return;
+    }
+    triggerAsyncUpdate();
+}
 
 choir::Settings ChoirProcessor::currentSettings() const {
     choir::Settings s;
@@ -156,6 +247,10 @@ bool ChoirProcessor::loadMidiFile(const juce::File& f, juce::String& err) {
         return false;
     }
     std::vector<unsigned char> bytes((const unsigned char*)mb.getData(), (const unsigned char*)mb.getData() + mb.getSize());
+    if (!isMidiData(bytes)) {
+        err = U("это не MIDI-файл");
+        return false;
+    }
     std::vector<choir::Note> notes;
     choir::Meta meta;
     std::string e;
@@ -204,6 +299,36 @@ juce::File ChoirProcessor::writePartFile(int idx) const {
     auto bytes = choir::writeSmf(parts, meta_);
     auto f = dir.getChildFile(name + ".mid");
     f.replaceWithData(bytes.data(), bytes.size());
+    return f;
+}
+
+bool ChoirProcessor::isMidiData(const std::vector<unsigned char>& b) {
+    return b.size() >= 14 && b[0] == 'M' && b[1] == 'T' && b[2] == 'h' && b[3] == 'd';
+}
+
+bool ChoirProcessor::isMidiFile(const juce::File& f) {
+    juce::FileInputStream in(f);
+    if (!in.openedOk()) return false;
+    char h[4]{};
+    return in.read(h, 4) == 4 && std::memcmp(h, "MThd", 4) == 0;
+}
+
+juce::String ChoirProcessor::scoreTitle() const {
+    auto src = inputSource_.upToLastOccurrenceOf(".", false, false);
+    if (src.isEmpty() || inputSource_.startsWith(U("захват"))) src = "Choir";
+    return src + " - " + juce::String::fromUTF8(result_.styleLabel.c_str());
+}
+
+juce::String ChoirProcessor::scoreXml() const {
+    return juce::String::fromUTF8(choir::toMusicXml(result_, meta_, scoreTitle().toStdString()).c_str());
+}
+
+juce::File ChoirProcessor::writeScoreFile() const {
+    auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ChoirArranger");
+    dir.createDirectory();
+    auto f = dir.getChildFile("Choir Score.musicxml");
+    auto x = choir::toMusicXml(result_, meta_, scoreTitle().toStdString());
+    f.replaceWithData(x.data(), x.size());
     return f;
 }
 
@@ -323,7 +448,8 @@ void ChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     juce::MidiBuffer synthMidi;
     if (killNotes_.exchange(false)) {
-        synthMidi.addEvent(juce::MidiMessage::allNotesOff(1), 0);
+        synth_.allNotesOff(0, false);
+        piano_.allNotesOff(0, false);
         midi.addEvent(juce::MidiMessage::allNotesOff(1), 0);
     }
     if (previewOn_.load()) {
@@ -345,7 +471,10 @@ void ChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
             }
         }
     }
-    synth_.renderNextBlock(buffer, synthMidi, 0, n);
+    bool usePiano = (int)*params.getRawParameterValue("sound") == 0;
+    juce::MidiBuffer empty;
+    (usePiano ? piano_ : synth_).renderNextBlock(buffer, synthMidi, 0, n);
+    (usePiano ? synth_ : piano_).renderNextBlock(buffer, empty, 0, n);   // lets released notes ring out
 }
 
 // ---------------------------------------------------------------- state
