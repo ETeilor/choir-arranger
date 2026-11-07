@@ -1147,6 +1147,7 @@ std::vector<Note> recite(const std::vector<Note>& melody, const std::vector<SCho
 }
 
 #include "StylesWave2.inc"
+#include "StylesWave3.inc"
 
 }  // namespace
 
@@ -1181,12 +1182,22 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
     if (s.style == Style::Gregorian) return finish(arrangeGregorian(an, meta, s));
     if (s.style == Style::Znamenny || s.style == Style::Byzantine) return finish(arrangeModal(an, meta, s));
     if (s.style == Style::Epic) return finish(arrangeEpic(an, meta, s));
+    if (s.style == Style::SacredHarp) return finish(arrangeSacredHarp(an, meta, s));
+    if (s.style == Style::Bulgarian) return finish(arrangeBulgarian(an, meta, s));
+    if (s.style == Style::Georgian) return finish(arrangeGeorgian(an, meta, s));
+    if (s.style == Style::Tintinnabuli) return finish(arrangeTintinnabuli(an, meta, s));
+    if (s.style == Style::CloseHarmony) return finish(arrangeCloseHarmony(an, meta, s));
+    if (s.style == Style::AcappellaPop) return finish(arrangeAcappellaPop(an, meta, s));
+    if (s.style == Style::Tenore) return finish(arrangeTenore(an, meta, s));
 
     StyleP st = s.style == Style::Obikhod        ? obikhodStyle()
                 : s.style == Style::Contemporary ? contemporaryStyle()
                 : s.style == Style::Gospel       ? gospelStyle()
                 : s.style == Style::Barbershop   ? barbershopStyle()
                 : s.style == Style::Renaissance  ? renaissanceStyle()
+                : s.style == Style::Partes       ? partesStyle()
+                : s.style == Style::Spiritual    ? spiritualStyle()
+                : s.style == Style::Anglican     ? anglicanStyle()
                                                  : bachStyle();
     Levels lv = resolveLevels(s, an.realMelody());
     if (st.melodyVoice == VA && an.realMelody()) {      // protect the voice that actually sings the melody
@@ -1196,6 +1207,7 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
     tuneStyle(st, lv);
     std::vector<Chord> chords = an.chords;
     if (st.id == "gospel") chords = gospelHarmony(chords, an.tonic, lv.max());
+    if (st.id == "spiritual") chords = gospelHarmony(chords, an.tonic, std::min(lv.max(), 4));
     if (st.id == "barbershop") chords = barbershopHarmony(chords, an.melody, an.tonic, lv.max());
     auto sch = translateAll(chords, an.tonic, an.minor, st);
     bool flex = an.source == MelodySource::TopOfChords;
@@ -1211,9 +1223,17 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
         int n = renaissanceEntries(parts, sch, an.tonic, an.minor, st, meta.num * TPB, lv.max());
         if (n) res.figures["imitation"] = n;
     }
+    if (st.id == "spiritual") {
+        int n = callResponse(parts, sch, melody, lv.max());
+        if (n) res.figures["запев и ответ"] = n;
+    }
     res.issues = checkParts(parts, meta.num, st);
     if (st.id == "contemporary") {
         res.parts = contemporaryDivisi(parts, sch, lv.max(), st);
+    } else if (st.id == "partes") {
+        int tEnd = 0;
+        for (auto& c : sch) tEnd = std::max(tEnd, c.end);
+        res.parts = partesChoirs(parts, meta.num * TPB * 4 / std::max(1, meta.den), tEnd, lv.max());
     } else {
         res.parts = {{st.partNames[VS], parts[VS]}, {st.partNames[VA], parts[VA]},
                      {st.partNames[VT], parts[VT]}, {st.partNames[VB], parts[VB]}};

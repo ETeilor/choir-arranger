@@ -186,7 +186,20 @@ std::vector<unsigned char> writeSmf(const std::vector<Part>& parts, const Meta& 
             return a.t != b.t ? a.t < b.t : a.on < b.on;
         });
         int last = 0;
-        unsigned char chan = (unsigned char)(ch & 0x0F);
+        // channel 10 is drums in General MIDI: voices skip it, the beatbox part goes there
+        bool drums = nm.rfind("Beatbox", 0) == 0;
+        int cidx = (int)ch < 9 ? (int)ch : std::min(15, (int)ch + 1);
+        unsigned char chan = (unsigned char)(drums ? 9 : cidx);
+        if (!drums) {
+            // Acoustic Grand Piano: bank 0, program 0, so Logic opens the track with a piano patch
+            std::string inst = "Acoustic Grand Piano";
+            t.insert(t.end(), {0x00, 0xFF, 0x04});
+            putVlq(t, (uint32_t)inst.size());
+            t.insert(t.end(), inst.begin(), inst.end());
+            t.insert(t.end(), {0x00, (unsigned char)(0xB0 | chan), 0x00, 0x00});
+            t.insert(t.end(), {0x00, (unsigned char)(0xB0 | chan), 0x20, 0x00});
+            t.insert(t.end(), {0x00, (unsigned char)(0xC0 | chan), 0x00});
+        }
         for (auto& e : ev) {
             putVlq(t, (uint32_t)(e.t - last));
             last = e.t;

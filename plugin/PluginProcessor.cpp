@@ -139,7 +139,7 @@ struct PianoVoice : juce::SynthesiserVoice {
 };
 
 choir::Style styleFromIndex(int i) {
-    return (choir::Style)juce::jlimit(0, (int)choir::Style::Epic, i);
+    return (choir::Style)juce::jlimit(0, (int)choir::Style::Tenore, i);
 }
 
 const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", "voiceB",
@@ -152,7 +152,10 @@ juce::StringArray ChoirProcessor::styleNames() {
     // same order as choir::Style
     return {U("Хорал Баха"), U("Православный обиход"), U("Григорианский хорал"), U("Знаменный распев (гармонизация)"),
             U("Византийский напев с исоном"), U("Ренессансная полифония"), U("Contemporary (Уитакр, Лауридсен)"),
-            U("Госпел"), U("Барбершоп"), U("Кинематографический эпик")};
+            U("Госпел"), U("Барбершоп"), U("Кинематографический эпик"), U("Партесный концерт (Бортнянский)"),
+            U("Спиричуэл"), U("Англиканское пение"), U("Sacred Harp (фигурные ноты)"), U("Болгарский женский хор"),
+            U("Грузинское многоголосие"), U("Тинтиннабули (Пярт)"), U("Джазовый close harmony"), U("A cappella поп"),
+            U("Сардинский cantu a tenore")};
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {

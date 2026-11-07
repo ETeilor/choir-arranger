@@ -48,7 +48,9 @@ extern const char* NAMES[12];
 
 // ---------------------------------------------------------------- settings
 // the order matters: it is the order of the plug-in's style menu (saved in projects)
-enum class Style { Bach, Obikhod, Gregorian, Znamenny, Byzantine, Renaissance, Contemporary, Gospel, Barbershop, Epic };
+enum class Style { Bach, Obikhod, Gregorian, Znamenny, Byzantine, Renaissance, Contemporary, Gospel, Barbershop, Epic,
+                   Partes, Spiritual, Anglican, SacredHarp, Bulgarian, Georgian, Tintinnabuli, CloseHarmony,
+                   AcappellaPop, Tenore };
 enum class Texture { Unison, Organum4, Organum5 };
 enum class OutOfMode { Substitute, Skip };
 

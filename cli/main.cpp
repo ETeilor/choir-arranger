@@ -37,7 +37,10 @@ int main(int argc, char** argv) {
         {"bach", Style::Bach},           {"obikhod", Style::Obikhod},       {"gregorian", Style::Gregorian},
         {"znamenny", Style::Znamenny},   {"byzantine", Style::Byzantine},   {"renaissance", Style::Renaissance},
         {"contemporary", Style::Contemporary}, {"gospel", Style::Gospel},  {"barbershop", Style::Barbershop},
-        {"epic", Style::Epic}};
+        {"epic", Style::Epic},           {"partes", Style::Partes},         {"spiritual", Style::Spiritual},
+        {"anglican", Style::Anglican},   {"sacredharp", Style::SacredHarp}, {"bulgarian", Style::Bulgarian},
+        {"georgian", Style::Georgian},   {"tintinnabuli", Style::Tintinnabuli},
+        {"closeharmony", Style::CloseHarmony}, {"apop", Style::AcappellaPop}, {"tenore", Style::Tenore}};
     if (!styles.count(style)) {
         std::cerr << "unknown style " << style << "\n";
         return 2;

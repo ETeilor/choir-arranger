@@ -12,6 +12,13 @@ juce::Colour ui::partColour(const std::string& n) {
     else if (starts("Lead")) c = juce::Colour(0xffe07a6a);
     else if (starts("Baritone")) c = juce::Colour(0xff8fc46a);
     else if (starts("Ison")) c = juce::Colour(0xff6d8fd8);
+    else if (starts("Treble") || starts("Boghe")) c = juce::Colour(0xffe8b04b);
+    else if (starts("Mesu")) c = juce::Colour(0xffe07a6a);
+    else if (starts("Contra")) c = juce::Colour(0xff5fb7a6);
+    else if (starts("Bassu")) c = juce::Colour(0xff6d8fd8);
+    else if (starts("Beatbox")) c = juce::Colour(0xffb0aaa0);
+    // choir II of a double choir is a lighter shade of choir I
+    if (n.size() > 3 && n.compare(n.size() - 3, 3, " II") == 0) c = c.brighter(0.35f).withMultipliedSaturation(0.7f);
     // the second line of a divisi pair is a lighter shade of the first
     if (n.size() > 2 && n.compare(n.size() - 2, 2, " 2") == 0) c = c.brighter(0.35f).withMultipliedSaturation(0.7f);
     return c;

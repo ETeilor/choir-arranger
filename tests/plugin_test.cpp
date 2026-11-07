@@ -131,9 +131,10 @@ int main(int argc, char** argv) {
     expect(p.loadMidiFile(input, e2), "вход возвращён");
 
     // 6. editor snapshots, one per style
-    const char* tags[10] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
-                            "contemporary", "gospel", "barbershop", "epic"};
-    for (int st = 0; st < 10; ++st) {
+    const char* tags[20] = {"bach", "obikhod", "gregorian", "znamenny", "byzantine", "renaissance",
+                            "contemporary", "gospel", "barbershop", "epic", "partes", "spiritual", "anglican",
+                            "sacredharp", "bulgarian", "georgian", "tintinnabuli", "closeharmony", "apop", "tenore"};
+    for (int st = 0; st < 20; ++st) {
         p.params.getParameter("style")->setValueNotifyingHost(p.params.getParameter("style")->convertTo0to1((float)st));
         if (st == 2) p.params.getParameter("texture")->setValueNotifyingHost(p.params.getParameter("texture")->convertTo0to1(1));
         pump(200);

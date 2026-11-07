@@ -190,14 +190,17 @@ ChoirEditor::~ChoirEditor() {
 void ChoirEditor::updateStyleControls() {
     using choir::Style;
     auto st = (Style)juce::jmax(0, styleBox.getSelectedItemIndex());
-    bool chant = st == Style::Gregorian || st == Style::Byzantine;   // one line: only the overall knob applies
+    // chant and the rule-based textures use one overall level: per-voice knobs are hidden there
+    bool chant = st == Style::Gregorian || st == Style::Byzantine || st == Style::Epic || st == Style::SacredHarp ||
+                 st == Style::Bulgarian || st == Style::Georgian || st == Style::Tintinnabuli ||
+                 st == Style::CloseHarmony || st == Style::AcappellaPop || st == Style::Tenore;
     bool modal = st == Style::Gregorian || st == Style::Byzantine || st == Style::Znamenny;
     octavistsBtn.setVisible(st == Style::Obikhod || st == Style::Znamenny);
     textureLbl.setVisible(st == Style::Gregorian);
     textureBox.setVisible(st == Style::Gregorian);
     outOfModeLbl.setVisible(modal);
     outOfModeBox.setVisible(modal);
-    mixedBtn.setVisible(chant);
+    mixedBtn.setVisible(st == Style::Gregorian || st == Style::Byzantine);
     voicesLbl.setVisible(!chant);
     for (int i = 0; i < 4; ++i) {
         voice[i].setVisible(!chant);
@@ -222,7 +225,7 @@ void ChoirEditor::refresh() {
         auto words = juce::StringArray::fromTokens(c->label, " ", "");
         c->shortLabel = words[0].startsWith("Bari") ? juce::String("Br") : words[0].startsWith("Octav") ? juce::String("Oct")
                                                                                                            : words[0].substring(0, 1);
-        if (words.size() > 1) c->shortLabel << words[1];
+        if (words.size() > 1) c->shortLabel << (words[1].startsWith("I") ? " " : "") << words[1];
         c->colour = ui::partColour(r.parts[i].name);
         int idx = (int)i;
         c->makeFile = [this, idx] { return proc.writePartFile(idx); };
@@ -353,8 +356,17 @@ void ChoirEditor::filesDropped(const juce::StringArray& files, int, int) {
     repaint();
     for (auto& path : files) {
         juce::File f(path);
+        if (f.getFileName() == "choir-drag-report.txt") {
+            // nothing usable came with the drag: show what did, and keep a copy for sending to the developer
+            auto copy = juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile("Choir Arranger drag report.txt");
+            f.copyFileTo(copy);
+            showError(U("Не получилось взять MIDI из перетащенного. Пока пользуйтесь «Захватом» или "
+                        "File > Export > Selection as MIDI File.\n\nОтчёт сохранён на рабочий стол: "
+                        "«Choir Arranger drag report.txt». Пришлите его, по нему я доделаю приём.\n\n") +
+                      f.loadFileAsString().substring(0, 900));
+            return;
+        }
         if (f.isDirectory()) {
-            // a promise folder or a folder of files: take the first MIDI file inside
             for (auto& c : f.findChildFiles(juce::File::findFiles, true))
                 if (ChoirProcessor::isMidiFile(c)) { f = c; break; }
         }
@@ -364,7 +376,7 @@ void ChoirEditor::filesDropped(const juce::StringArray& files, int, int) {
         return;
     }
     showError(U("Не нашёл MIDI в том, что перетащили. Если это регион из Logic, "
-                "сделайте Export > Selection as MIDI File или включите «Захват»."));
+                "сделайте File > Export > Selection as MIDI File или включите «Захват»."));
 }
 
 void ChoirEditor::openFile() {

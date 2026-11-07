@@ -63,6 +63,10 @@ struct Clef { char sign; int line, octave; };
 Clef clefFor(const Part& p) {
     auto starts = [&](const char* s) { return p.name.rfind(s, 0) == 0; };
     if (starts("Octavist")) return {'F', 4, -1};
+    if (starts("Beatbox")) return {'P', 2, 0};
+    if (starts("Bassu") || starts("Contra")) return {'F', 4, 0};
+    if (starts("Boghe") || starts("Mesu")) return {'G', 2, -1};
+    if (starts("Treble")) return {'G', 2, 0};
     if (starts("Bass") || starts("Baritone") || starts("Ison")) return {'F', 4, 0};
     if (starts("Tenor")) return {'G', 2, -1};
     if (starts("Soprano") || starts("Alto") || starts("Lead")) return {'G', 2, 0};
@@ -183,7 +187,7 @@ std::string toMusicXml(const Result& r, const Meta& meta, const std::string& tit
             if (m == 0) {
                 o << "      <attributes><divisions>" << DIV << "</divisions><key><fifths>" << fifths
                   << "</fifths><mode>" << (r.keyMinor ? "minor" : "major") << "</mode></key><time><beats>"
-                  << num << "</beats><beat-type>" << den << "</beat-type></time><clef><sign>" << clef.sign
+                  << num << "</beats><beat-type>" << den << "</beat-type></time><clef><sign>" << (clef.sign == 'P' ? "percussion" : std::string(1, clef.sign))
                   << "</sign><line>" << clef.line << "</line>";
                 if (clef.octave) o << "<clef-octave-change>" << clef.octave << "</clef-octave-change>";
                 o << "</clef></attributes>\n";

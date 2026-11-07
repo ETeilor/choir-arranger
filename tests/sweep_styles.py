@@ -1,7 +1,8 @@
 """Every style x every test file x several levels: no errors, parts in range, statistics."""
 import subprocess, sys, glob, collections
 cli, root = sys.argv[1], sys.argv[2]
-styles = ['znamenny', 'byzantine', 'renaissance', 'contemporary', 'gospel', 'barbershop', 'epic']
+styles = sys.argv[3].split(',') if len(sys.argv) > 3 else ['znamenny', 'byzantine', 'renaissance', 'contemporary', 'gospel', 'barbershop', 'epic',
+          'partes', 'spiritual', 'anglican', 'sacredharp', 'bulgarian', 'georgian', 'tintinnabuli', 'closeharmony', 'apop', 'tenore']
 extra = {'znamenny': ['--octavists'], 'byzantine': []}
 bad = 0
 for st in styles:
