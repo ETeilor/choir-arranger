@@ -70,6 +70,7 @@ struct Settings {
     bool amateur = false;                 // narrower, safer ranges for an amateur choir
     InputMode input = InputMode::Auto;    // Auto harmonizes a bare melody
     int variant = 0;                      // 0 = the default arrangement, 1.. = alternatives
+    bool majorFinal = true;               // Soviet style: a minor piece may close on a major tonic (levels 6+)
     std::map<std::string, std::vector<Note>> locks;   // part name -> notes kept as they are
 
     static Settings fromSpec(Style st, const std::string& complexitySpec);
@@ -107,22 +108,40 @@ Result arrange(const std::vector<Note>& notes, const Meta& meta, const Settings&
 // ---------------------------------------------------------------- live voicing (MIDI FX)
 // Voices the chord being held right now, as smoothly as possible from the previous one. No look-ahead,
 // so no ornaments: the live mode is for sketching, the arranger for the final parts.
+struct LiveKey {
+    int pitch = 60, vel = 90;
+};
+
 struct LiveVoicing {
     std::vector<std::string> names;   // sung parts, top to bottom
     std::vector<int> pitches;         // same order; empty when nothing is held
+    std::vector<int> velocities;      // per part, from the velocities of the keys nearest to it
+    std::vector<int> group;           // 0 = soprano group .. 3 = bass group (extra voices share a group)
     std::string chord;                // recognized chord name
 };
 
 class LiveVoicer {
 public:
-    void reset() { havePrev_ = false; }
-    LiveVoicing voice(const std::vector<int>& held, const Settings& s, bool topIsMelody);
+    void reset() { havePrev_ = false, memPcs_.clear(); }
+    // all keys released: the chord is forgotten, the last voicing stays as the starting point of the next one
+    void released() { memPcs_.clear(); }
+    // octaveShift: 0, -1 or -2 octaves under the choir's own register
+    LiveVoicing voice(const std::vector<LiveKey>& keys, const Settings& s, bool topIsMelody, int octaveShift = 0);
+    LiveVoicing voice(const std::vector<int>& held, const Settings& s, bool topIsMelody) {
+        std::vector<LiveKey> k;
+        for (int p : held) k.push_back({p, 90});
+        return voice(k, s, topIsMelody, 0);
+    }
 
 private:
     std::array<int, 4> prev_{};
     int prevRoot_ = 0;
     std::string prevQuality_;
     bool havePrev_ = false;
+    // the chord as it was last recognized: re-fingering inside it (an inversion, a released note) keeps it
+    std::set<int> memPcs_;
+    int memRoot_ = 0;
+    std::string memQuality_;
 };
 
 // ---------------------------------------------------------------- notation

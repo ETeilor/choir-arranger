@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 # must come before project(): the oldest macOS the plug-in runs on, and a universal binary
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
-project(ChoirArranger VERSION 0.7.1 LANGUAGES CXX C)
+project(ChoirArranger VERSION 0.8.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,13 +53,18 @@ if(CHOIR_BUILD_PLUGIN)
         NEEDS_MIDI_INPUT TRUE
         NEEDS_MIDI_OUTPUT TRUE
         IS_MIDI_EFFECT FALSE
-        EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+        EDITOR_WANTS_KEYBOARD_FOCUS TRUE
         COPY_PLUGIN_AFTER_BUILD FALSE
         AU_MAIN_TYPE kAudioUnitType_MusicDevice
         VST3_CATEGORIES Instrument Tools)
 
+    if(APPLE)
+        set(CHOIR_CLIPBOARD plugin/Clipboard_mac.mm)
+    else()
+        set(CHOIR_CLIPBOARD plugin/Clipboard.cpp)
+    endif()
     target_sources(ChoirArranger PRIVATE
-        plugin/PluginProcessor.cpp plugin/PluginEditor.cpp plugin/PianoRoll.cpp plugin/Look.cpp)
+        plugin/PluginProcessor.cpp plugin/PluginEditor.cpp plugin/PianoRoll.cpp plugin/Look.cpp ${CHOIR_CLIPBOARD})
     target_compile_definitions(ChoirArranger PUBLIC
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_DISPLAY_SPLASH_SCREEN=0)
@@ -100,7 +105,7 @@ if(CHOIR_BUILD_PLUGIN AND CHOIR_BUILD_TESTS)
     juce_add_console_app(ChoirPluginTests PRODUCT_NAME "ChoirPluginTests")
     target_sources(ChoirPluginTests PRIVATE tests/plugin_test.cpp
         plugin/PluginProcessor.cpp plugin/PluginEditor.cpp plugin/PianoRoll.cpp plugin/Look.cpp
-        plugin/LiveProcessor.cpp plugin/LiveEditor.cpp)
+        plugin/LiveProcessor.cpp plugin/LiveEditor.cpp ${CHOIR_CLIPBOARD})
     target_include_directories(ChoirPluginTests PRIVATE plugin)
     target_compile_definitions(ChoirPluginTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JucePlugin_Name="Choir Arranger" JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1

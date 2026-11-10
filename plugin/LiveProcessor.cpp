@@ -17,6 +17,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout LiveProcessor::layout() {
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"channels", 1}, "Channels",
                                                  StringArray{U("Все голоса в один канал"), U("Каждый голос в свой канал")}, 0));
     l.add(std::make_unique<AudioParameterInt>(ParameterID{"variant", 1}, "Variant", 0, 99, 0));
+    l.add(std::make_unique<AudioParameterChoice>(ParameterID{"register", 1}, "Register",
+                                                 StringArray{U("Как у хора"), U("На октаву ниже"), U("На две октавы ниже")}, 0));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{"velocity", 1}, "Velocity per voice", true));
     return l;
 }
 
@@ -37,29 +40,64 @@ choir::Settings LiveProcessor::settings() const {
     return s;
 }
 
-void LiveProcessor::revoice(juce::MidiBuffer& out, int sample) {
-    std::vector<int> keys;
-    for (int k = 0; k < 128; ++k)
-        if (held_[k] > 0 || sustained_.count(k)) keys.push_back(k);
-    bool perVoice = (int)*params.getRawParameterValue("channels") == 1;
-    choir::LiveVoicing v;
-    if (!keys.empty()) v = voicer_.voice(keys, settings(), *params.getRawParameterValue("topmelody") > 0.5f);
-    size_t n = std::max(sounding_.size(), v.pitches.size());
-    sounding_.resize(n, -1);
-    channels_.resize(n, 1);
-    for (size_t i = 0; i < n; ++i) {
-        int want = i < v.pitches.size() ? v.pitches[i] : -1;
-        int ch = perVoice ? (int)i + 1 : 1;
-        if (sounding_[i] == want && channels_[i] == ch) continue;
-        if (sounding_[i] >= 0) out.addEvent(juce::MidiMessage::noteOff(channels_[i], sounding_[i]), sample);
-        if (want >= 0) out.addEvent(juce::MidiMessage::noteOn(ch, want, (juce::uint8)lastVel_), sample);
-        sounding_[i] = want;
-        channels_[i] = ch;
+void LiveProcessor::revoice(juce::MidiBuffer& out, int sample, double beats) {
+    std::vector<choir::LiveKey> keys;
+    for (int k = 0; k < 128; ++k) {
+        if (held_[(size_t)k] > 0 && !stale_[(size_t)k]) keys.push_back({k, held_[(size_t)k]});
+        else if (sustained_[(size_t)k]) keys.push_back({k, sustainVel_[(size_t)k]});
     }
-    if (keys.empty()) voicer_.reset();
+    bool perVoice = (int)*params.getRawParameterValue("channels") == 1;
+    bool useVel = *params.getRawParameterValue("velocity") > 0.5f;
+    int shift = -(int)*params.getRawParameterValue("register");
+    choir::LiveVoicing v;
+    if (!keys.empty()) v = voicer_.voice(keys, settings(), *params.getRawParameterValue("topmelody") > 0.5f, shift);
+    else voicer_.released();
+    int avg = 90;
+    if (!keys.empty()) {
+        avg = 0;
+        for (auto& k : keys) avg += k.vel;
+        avg /= (int)keys.size();
+    }
+    // voices are matched by part name, so an extra voice coming or going does not retrigger the others
+    std::vector<int> nextPitch, nextChan;
+    std::vector<std::string> nextNames;
+    const juce::SpinLock::ScopedLockType rl(recLock_);
+    std::vector<int> nextOpen;
+    bool changed = false;
+    for (size_t i = 0; i < v.pitches.size(); ++i) {
+        int ch = perVoice ? juce::jlimit(1, 16, v.group[i] + 1) : 1;
+        int vel = useVel ? v.velocities[i] : avg;
+        int old = -1;
+        for (size_t j = 0; j < soundingNames_.size(); ++j)
+            if (soundingNames_[j] == v.names[i]) old = (int)j;
+        if (old >= 0 && sounding_[(size_t)old] == v.pitches[i] && channels_[(size_t)old] == ch) {
+            nextOpen.push_back(recOpen_[(size_t)old]);
+            recOpen_[(size_t)old] = -2;      // carried over
+            sounding_[(size_t)old] = -1;
+        } else {
+            out.addEvent(juce::MidiMessage::noteOn(ch, v.pitches[i], (juce::uint8)juce::jlimit(1, 127, vel)), sample);
+            if (rec_.size() < 40000) {
+                rec_.push_back({beats, -1.0, v.pitches[i], vel, v.names[i]});
+                nextOpen.push_back((int)rec_.size() - 1);
+            } else {
+                nextOpen.push_back(-1);
+            }
+            changed = true;
+        }
+        nextPitch.push_back(v.pitches[i]);
+        nextChan.push_back(ch);
+        nextNames.push_back(v.names[i]);
+    }
+    for (size_t j = 0; j < sounding_.size(); ++j) {
+        if (sounding_[j] >= 0) out.addEvent(juce::MidiMessage::noteOff(channels_[j], sounding_[j]), sample);
+        if (recOpen_[j] >= 0 && recOpen_[j] < (int)rec_.size()) rec_[(size_t)recOpen_[j]].off = beats;
+    }
+    sounding_ = nextPitch, channels_ = nextChan, soundingNames_ = nextNames, recOpen_ = nextOpen;
+    if (changed && !v.pitches.empty()) recChords_++;
     const juce::SpinLock::ScopedLockType l(snapLock_);
     snap_.names = v.names;
     snap_.pitches = v.pitches;
+    snap_.velocities = v.velocities;
     snap_.chord = v.chord;
 }
 
@@ -67,38 +105,70 @@ void LiveProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
     buffer.clear();
     const int n = buffer.getNumSamples() > 0 ? buffer.getNumSamples() : 512;
     const long long settle = (long long)(SETTLE_MS * 0.001 * sampleRate_);
+    // time base of the recording: the host's beats while it plays, the plug-in's own clock otherwise
+    double bpm = 120, ppq0 = 0;
+    bool playing = false;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition()) {
+            playing = pos->getIsPlaying();
+            if (auto b = pos->getBpm()) bpm = *b;
+            if (auto p = pos->getPpqPosition()) ppq0 = *p;
+            if (auto ts = pos->getTimeSignature()) recNum_ = ts->numerator, recDen_ = ts->denominator;
+        }
+    recBpm_ = bpm;
+    auto beatsAt = [&](long long at) {
+        double rel = (double)(at - clock_) / sampleRate_ * bpm / 60.0;
+        return playing ? ppq0 + rel : (double)clock_ / sampleRate_ * bpm / 60.0 + rel + 1.0e6;   // far from host time
+    };
     juce::MidiBuffer out;
     for (const auto m : midi) {
         auto msg = m.getMessage();
         const long long at = clock_ + m.samplePosition;
         if (pendingAt_ >= 0 && at >= pendingAt_) {
-            revoice(out, (int)juce::jlimit<long long>(0, n - 1, pendingAt_ - clock_));
+            revoice(out, (int)juce::jlimit<long long>(0, n - 1, pendingAt_ - clock_), beatsAt(pendingAt_));
             pendingAt_ = -1;
         }
         if (msg.isNoteOn()) {
-            bool fresh = true;
-            for (int k = 0; k < 128; ++k)
-                if (held_[k] > 0) fresh = false;
-            if (fresh && pedal_) sustained_.clear();     // a new chord under the pedal replaces the old one
-            held_[msg.getNoteNumber()]++;
-            lastVel_ = msg.getVelocity();
+            int k = msg.getNoteNumber();
+            if (at - groupStart_ > settle) {             // a new onset group
+                groupStart_ = at;
+                groupCount_ = 0;
+                beforeGroup_.reset();
+                for (int q = 0; q < 128; ++q)
+                    if (held_[(size_t)q] > 0) beforeGroup_.set((size_t)q);
+                if (beforeGroup_.none() && pedal_) sustained_.reset();   // a new chord under the pedal replaces the old
+            }
+            ++groupCount_;
+            // two or more keys together are a new chord: keys still down from the previous one no longer count
+            if (groupCount_ >= 2) {
+                stale_ |= beforeGroup_;
+                sustained_.reset();
+            }
+            held_[(size_t)k] = juce::jmax(1, (int)msg.getVelocity());
+            stale_.reset((size_t)k);
             pendingAt_ = at + settle;
         } else if (msg.isNoteOff()) {
             int k = msg.getNoteNumber();
-            if (held_[k] > 0) held_[k]--;
-            if (pedal_ && held_[k] == 0) sustained_.insert(k);
-            else pendingAt_ = at + settle;
+            bool wasStale = stale_[(size_t)k];
+            if (pedal_ && held_[(size_t)k] > 0 && !wasStale) {
+                sustained_.set((size_t)k);
+                sustainVel_[(size_t)k] = held_[(size_t)k];
+            }
+            held_[(size_t)k] = 0;
+            stale_.reset((size_t)k);
+            if (!wasStale && !pedal_) pendingAt_ = at + settle;
         } else if (msg.isSustainPedalOn()) {
             pedal_ = true;
         } else if (msg.isSustainPedalOff()) {
             pedal_ = false;
-            if (!sustained_.empty()) {
-                sustained_.clear();
+            if (sustained_.any()) {
+                sustained_.reset();
                 pendingAt_ = at + settle;
             }
         } else if (msg.isAllNotesOff() || msg.isAllSoundOff()) {
             held_.fill(0);
-            sustained_.clear();
+            stale_.reset();
+            sustained_.reset();
             pendingAt_ = at;
         } else {
             // controllers, pitch bend, aftertouch: to every channel the voices use
@@ -114,7 +184,7 @@ void LiveProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
         }
     }
     if (pendingAt_ >= 0 && pendingAt_ < clock_ + n) {
-        revoice(out, (int)juce::jlimit<long long>(0, n - 1, pendingAt_ - clock_));
+        revoice(out, (int)juce::jlimit<long long>(0, n - 1, pendingAt_ - clock_), beatsAt(pendingAt_));
         pendingAt_ = -1;
     }
     clock_ += n;
@@ -124,6 +194,67 @@ void LiveProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
 LiveProcessor::Snapshot LiveProcessor::snapshot() const {
     const juce::SpinLock::ScopedLockType l(snapLock_);
     return snap_;
+}
+
+void LiveProcessor::clearRecording() {
+    const juce::SpinLock::ScopedLockType l(recLock_);
+    rec_.clear();
+    for (auto& o : recOpen_) o = -1;
+    recChords_ = 0;
+}
+
+juce::File LiveProcessor::writeRecordingFile() const {
+    std::vector<RecNote> notes;
+    {
+        const juce::SpinLock::ScopedLockType l(recLock_);
+        notes = rec_;
+    }
+    if (notes.empty()) return {};
+    // a take may mix host time and the plug-in's own clock, or hold long silences: close every gap over four bars
+    std::sort(notes.begin(), notes.end(), [](const RecNote& x, const RecNote& y) { return x.on < y.on; });
+    {
+        double barLen = recNum_ * 4.0 / juce::jmax(1, recDen_), shift = 0, prevEnd = notes.front().on;
+        for (auto& r : notes) {
+            double gap = r.on - shift - prevEnd;
+            if (gap > 4 * barLen) shift += gap - barLen;
+            r.on -= shift;
+            if (r.off >= 0) r.off -= shift;
+            prevEnd = std::max(prevEnd, std::max(r.on, r.off));
+        }
+    }
+    double first = notes.front().on, last = 0;
+    for (auto& r : notes) first = std::min(first, r.on), last = std::max(last, std::max(r.on, r.off));
+    choir::Meta meta;
+    meta.tempo = (int)std::lround(60000000.0 / juce::jmax(20.0, recBpm_));
+    meta.num = recNum_, meta.den = recDen_;
+    double bar = meta.num * 4.0 / juce::jmax(1, meta.den);
+    double origin = std::floor(first / bar) * bar;          // keep the place inside the bar
+    std::vector<choir::Part> parts;
+    auto partOf = [&](const std::string& name) -> choir::Part& {
+        for (auto& p : parts)
+            if (p.name == name) return p;
+        parts.push_back({name, {}});
+        return parts.back();
+    };
+    // the order choirs are written in
+    for (auto* nm : {"Soprano", "Soprano 1", "Soprano 2", "Alto", "Alto 1", "Alto 2", "Tenor", "Tenor 1", "Tenor 2",
+                     "Lead", "Baritone", "Bass", "Bass 1", "Bass 2"})
+        for (auto& r : notes)
+            if (r.part == nm) { partOf(nm); break; }
+    for (auto& r : notes) {
+        double off = r.off > r.on ? r.off : last + 0.25;    // still sounding: ends with the take
+        int a = (int)std::lround((r.on - origin) * choir::TPB), b = (int)std::lround((off - origin) * choir::TPB);
+        if (b - a < 30) b = a + 30;
+        partOf(r.part).notes.push_back(choir::Note{a, b, r.pitch, juce::jlimit(1, 127, r.vel), 0});
+    }
+    auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                   .getChildFile("ChoirArranger")
+                   .getChildFile("live" + juce::String(juce::Time::currentTimeMillis()));
+    dir.createDirectory();
+    auto f = dir.getChildFile("Choir Live.mid");
+    auto bytes = choir::writeSmf(parts, meta);
+    f.replaceWithData(bytes.data(), bytes.size());
+    return f;
 }
 
 void LiveProcessor::getStateInformation(juce::MemoryBlock& dest) {

@@ -606,7 +606,7 @@ Result arrangeTenore(const Analysis& an, const Meta& meta, const Settings& s) {
 // ---- Soviet estrada and film song (Zatsepin, Gladkov, Krylatov, Pauls; Artemyev's vocalise pads)
 // Harmony: harmonic minor with a dominant seventh, the circle-of-fifths sequence, a secondary
 // dominant into iv ("A7 -> Dm"), jazz colours higher up, a major final chord at the top levels.
-std::vector<Chord> sovietHarmony(const std::vector<Chord>& in, int tonic, bool minor, int level) {
+std::vector<Chord> sovietHarmony(const std::vector<Chord>& in, int tonic, bool minor, int level, bool majorFinal) {
     std::vector<Chord> out;
     for (size_t i = 0; i < in.size(); ++i) {
         Chord c = in[i];
@@ -623,7 +623,7 @@ std::vector<Chord> sovietHarmony(const std::vector<Chord>& in, int tonic, bool m
             else if (c.quality == "" && deg == 0 && !minor) c.quality = "6";
         }
         if (level >= 7 && !last && c.quality == "7") c.quality = "9";
-        if (last && minor && deg == 0 && level >= 6) c.quality = "";            // the major third at the end
+        if (last && minor && deg == 0 && level >= 6 && majorFinal) c.quality = "";   // the major third at the end
         // secondary dominant before iv / III (minor) or ii / vi (major), in the second half of a long chord
         if (level >= 4 && nx && c.end - c.start >= 960) {
             int nd = mod12(nx->root - tonic);
@@ -637,7 +637,8 @@ std::vector<Chord> sovietHarmony(const std::vector<Chord>& in, int tonic, bool m
                 out.push_back(c);
                 out.push_back(d);
                 continue;
-            } else if (target && domRoot == c.root && (c.quality == "m" || c.quality == "" || c.quality == "maj7")) {
+            } else if (target && domRoot == c.root && i > 0 &&
+                       (c.quality == "m" || c.quality == "" || c.quality == "maj7")) {
                 c.quality = "7";                                                 // the tonic itself turns into V7/iv
             }
         }
@@ -650,7 +651,7 @@ Result arrangeSoviet(const Analysis& anIn, const Meta& meta, const Settings& s) 
     Levels lv = resolveLevels(s, anIn.realMelody());
     int level = lv.max();
     Analysis an = anIn;
-    an.chords = sovietHarmony(anIn.chords, an.tonic, an.minor, level);
+    an.chords = sovietHarmony(anIn.chords, an.tonic, an.minor, level, s.majorFinal);
     StyleP st = bachStyle();
     st.keepColors = true;
     st.colorMap = colorTable();

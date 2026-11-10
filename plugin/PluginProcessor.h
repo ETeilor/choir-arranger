@@ -55,6 +55,18 @@ public:
     void toggleLock(const juce::String& part);
     bool isLocked(const juce::String& part) const;
     void stepVariant(int dir);     // +1: the next variant that differs, -1: back
+    choir::Settings settingsForTest() const { return currentSettings(); }
+    // full recompute from the input alone: locks dropped, back to the main variant
+    void refreshAll();
+    // saved variants, per style: a slot holds every setting that shapes the arrangement
+    int numSlots() const;
+    int currentSlot() const;            // slot equal to the current settings, or -1
+    void saveSlot();
+    void loadSlot(int index);
+    void removeSlot(int index);
+    // clipboard: Cmd+C on a region in the DAW, then paste here
+    bool pasteFromClipboard(juce::String& message);
+    bool loadMidiBytes(const void* data, size_t size, const juce::String& source, juce::String& err);
     std::function<void()> onResultChanged;
 
     // capture
@@ -70,7 +82,7 @@ public:
 private:
     void parameterChanged(const juce::String&, float) override;
     void handleAsyncUpdate() override;
-    choir::Settings currentSettings() const;
+    choir::Settings currentSettings() const;   // (used by tests through settingsForTest)
     void finishCapture();
     void rebuildPreviewEvents();
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
@@ -81,6 +93,13 @@ private:
     choir::Result result_;
     std::map<std::string, std::vector<choir::Note>> locks_;
     int lockKey_ = -1;
+    using Slot = std::map<juce::String, float>;
+    std::map<int, std::vector<Slot>> slots_;      // style index -> saved variants
+    std::map<int, int> variantByStyle_;           // the variant last used in each style
+    int lastStyle_ = -1;
+    Slot snapshot() const;
+    int styleIndex() const;
+    mutable int dragCounter_ = 0;
 
     // capture (audio thread writes, message thread reads after stop)
     struct RawEvent { double ppq; int note, vel; bool on; };

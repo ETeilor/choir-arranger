@@ -1416,31 +1416,35 @@ StyleP liveStyle(Style st) {
 }
 }  // namespace
 
-LiveVoicing LiveVoicer::voice(const std::vector<int>& held, const Settings& s, bool topIsMelody) {
+LiveVoicing LiveVoicer::voice(const std::vector<LiveKey>& keysIn, const Settings& s, bool topIsMelody, int octaveShift) {
     LiveVoicing out;
-    if (held.empty()) return out;
-    std::vector<int> hs = held;
-    std::sort(hs.begin(), hs.end());
-    // recognize the chord through the regular analysis
-    std::vector<Note> ns;
-    for (int p : hs) ns.push_back(Note{0, TPB * 4, p, 80});
+    if (keysIn.empty()) return out;
+    std::vector<LiveKey> keys = keysIn;
+    std::sort(keys.begin(), keys.end(), [](const LiveKey& a, const LiveKey& b) { return a.pitch < b.pitch; });
+    std::vector<int> hs;
+    for (auto& k : keys) hs.push_back(k.pitch);
     std::set<int> pcs;
     for (int p : hs) pcs.insert(mod12(p));
     Chord c;
-    if (pcs.size() >= 2) {
+    // re-fingering inside the chord that is already sounding (an inversion, a note let go, the bass moved
+    // an octave) keeps the chord: only the bass and the top follow the hands
+    bool inside = !memPcs_.empty() && std::includes(memPcs_.begin(), memPcs_.end(), pcs.begin(), pcs.end());
+    if (inside) {
+        c.root = memRoot_, c.quality = memQuality_;
+        c.bassPc = mod12(hs.front());
+        c.pcs = memPcs_;
+    } else if (pcs.size() >= 2) {
+        std::vector<Note> ns;
+        for (int p : hs) ns.push_back(Note{0, TPB * 4, p, 80});
         Analysis an = analyse(ns);
         if (!an.chords.empty()) c = an.chords.front();
     }
-    if (c.pcs.empty()) {   // one key: a major triad on it, or the previous chord if it contains the note
-        int pc = mod12(hs.front());
-        if (havePrev_ && qualityIv(prevQuality_).size() && (pc == prevRoot_)) {
-            c.root = prevRoot_, c.quality = prevQuality_;
-        } else {
-            c.root = pc, c.quality = "";
-        }
+    if (c.pcs.empty()) {   // one key: a major triad on it
+        c.root = mod12(hs.front()), c.quality = "";
         c.bassPc = c.root;
         c.pcs = {c.root};
     }
+    if (!inside) memPcs_ = pcs, memRoot_ = c.root, memQuality_ = c.quality;
     c.start = 0, c.end = TPB * 4;
     StyleP st = liveStyle(s.style);
     Levels lv = resolveLevels(s, topIsMelody);
@@ -1455,12 +1459,23 @@ LiveVoicing LiveVoicer::voice(const std::vector<int>& held, const Settings& s, b
         p.root = prevRoot_, p.quality = prevQuality_, p.bassPc = prevRoot_, p.start = 0, p.end = TPB;
         return p;
     }()}, tonic, minor, st)[0] : sch[0];
-    int mel = -1;
-    if (topIsMelody) {
-        mel = hs.back();
-        while (mel < st.melLo) mel += 12;
-        while (mel > st.melHi) mel -= 12;
-    }
+
+    // what the hands say: span, register, number of keys, force
+    int span = hs.back() - hs.front();
+    int nKeys = (int)hs.size();
+    double avgVel = 0;
+    for (auto& k : keys) avgVel += k.vel;
+    avgVel /= nKeys;
+    // spacing follows the hands when a full chord is played: close position stays close, a wide one opens up
+    if (nKeys >= 3 && span <= 12) st.maxSA = std::min(st.maxSA, 9), st.maxAT = std::min(st.maxAT, 9);
+    else if (nKeys >= 3 && span >= 28) st.maxSA = std::max(st.maxSA, 14), st.maxAT = std::max(st.maxAT, 14);
+    // register: the top voice sits where the top key is, as far as the voice's range allows
+    int topKey = hs.back();
+    int mv = st.melodyVoice;
+    int wantTop = topKey;
+    while (wantTop < st.rangeLo[mv]) wantTop += 12;
+    while (wantTop > st.rangeHi[mv]) wantTop -= 12;
+    int mel = topIsMelody ? wantTop : -1;
     st.bassAlt.clear();   // the bass sings the bass note the player holds
     Slice sl{TPB, TPB * 2, 1, mel, -1, false, true, false, false};
     Slice psl{0, TPB, 0, -1, -1, false, true, false, false};
@@ -1474,22 +1489,73 @@ LiveVoicing LiveVoicer::voice(const std::vector<int>& held, const Settings& s, b
         sl.mel = -1;
         cands = candidates(sl, sch[0], st, tonic);
     }
+    if (cands.empty()) {
+        StyleP wide = st;
+        wide.maxSA = wide.maxAT = 24, wide.maxTB = 28, wide.maxST = 99, wide.relaxed = true;
+        cands = candidates(sl, sch[0], wide, tonic);
+    }
     if (cands.empty()) return out;
     double best = INF;
     Voicing pick = cands.front().v;
     for (auto& cd : cands) {
         double t = cd.vc;
         if (havePrev_) t += transitionCost(prev_, cd.v, psl, sl, prevCh, sch[0], st, tonic);
+        if (!topIsMelody) t += 0.35 * std::abs(cd.v[mv] - wantTop);          // free top: still near the hands
+        // a low left hand pulls the bass down, a high one lets it rise
+        int wantBass = hs.front();
+        while (wantBass < st.rangeLo[VB]) wantBass += 12;
+        while (wantBass > st.rangeHi[VB]) wantBass -= 12;
+        t += 0.25 * std::abs(cd.v[VB] - wantBass);
         if (t < best) best = t, pick = cd.v;
     }
     prev_ = pick;
     prevRoot_ = c.root;
     prevQuality_ = sch[0].quality;
     havePrev_ = true;
+
+    // velocity of a sung part: the keys nearest to it in the hands weigh most; outer parts follow outer keys
+    auto velFor = [&](int rank, int total) {   // rank 0 = top part
+        if (nKeys == 1) return keys[0].vel;
+        double pos = total <= 1 ? 0.0 : (double)rank / (total - 1);          // 0 top .. 1 bottom
+        double x = (1.0 - pos) * (nKeys - 1);                                // position among the keys, bottom = 0
+        int i0 = (int)std::floor(x), i1 = std::min(nKeys - 1, i0 + 1);
+        double f = x - i0;
+        return (int)std::lround(keys[i0].vel * (1 - f) + keys[i1].vel * f);
+    };
+    struct V { std::string name; int pitch, grp; };
+    std::vector<V> vs;
     for (int v = 3; v >= 0; --v) {
         if (v == st.dropVoice) continue;
-        out.names.push_back(st.partNames[v]);
-        out.pitches.push_back(pick[v]);
+        vs.push_back({st.partNames[v], pick[v], 3 - v});
+    }
+    // density: five or more keys add a second soprano on a tone the choir is not singing yet
+    if (nKeys >= 5 && st.dropVoice < 0) {
+        int S = pick[VS], A = pick[VA];
+        int add = -1;
+        double bs = 1e9;
+        for (int p = S - 1; p > A; --p) {
+            int pc = mod12(p);
+            if (!pcs.count(pc)) continue;
+            bool sung = false;
+            for (int q : pick) sung = sung || mod12(q) == pc;
+            double cost = (sung ? 2.0 : 0.0) + (S - p < 3 ? 1.5 : 0.0) + 0.1 * (S - p);
+            if (cost < bs) bs = cost, add = p;
+        }
+        if (add >= 0) vs.insert(vs.begin() + 1, {std::string(st.partNames[VS]) + " 2", add, 0});
+    }
+    // force: the bass played in octaves, or the whole chord struck hard, doubles the bass an octave down
+    bool bassOctave = nKeys >= 2 && hs[1] - hs[0] == 12;
+    if ((bassOctave && keys[0].vel >= 80) || avgVel >= 108) {
+        int low = pick[VB] - 12;
+        if (low >= 31 && st.dropVoice != VB)
+            vs.push_back({std::string(st.partNames[VB]) + " 2", low, 3});
+    }
+    int total = (int)vs.size();
+    for (int i = 0; i < total; ++i) {
+        out.names.push_back(vs[i].name);
+        out.pitches.push_back(vs[i].pitch + 12 * octaveShift);
+        out.velocities.push_back(std::max(1, std::min(127, velFor(i, total))));
+        out.group.push_back(vs[i].grp);
     }
     out.chord = sch[0].name();
     return out;

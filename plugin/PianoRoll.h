@@ -6,10 +6,11 @@
 inline juce::String U(const char* s) { return juce::String::fromUTF8(s); }
 
 namespace ui {
-// palette shared by the editor
-const juce::Colour bg{0xff17161a}, panel{0xff201f24}, panelHi{0xff2a2930}, line{0xff34333a},
-    text{0xffe9e4da}, textDim{0xff9a958c}, accent{0xffd9a441};
+// palette shared by both editors: near-black neutrals, one accent, soft part colours
+const juce::Colour bg{0xff0c0c0e}, panel{0xff141417}, panelHi{0xff1c1c20}, line{0xff29292f},
+    text{0xfff1f0ec}, textDim{0xff80808a}, accent{0xffc9f25c}, onAccent{0xff10110a};
 juce::Colour partColour(const std::string& name);
+juce::Font font(float size, bool medium = false);
 }  // namespace ui
 
 class PianoRoll : public juce::Component {
@@ -24,7 +25,7 @@ public:
     void mouseExit(const juce::MouseEvent&) override { hover = false; repaint(); }
     std::function<juce::File()> makeDragFile;   // dragging the roll carries all parts out as one .mid
 
-    static constexpr float keyboardWidth = 54.0f;
+    static constexpr float keyboardWidth = 44.0f;
 
 private:
     bool hover = false, dragging = false;

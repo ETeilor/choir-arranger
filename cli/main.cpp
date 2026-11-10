@@ -58,13 +58,18 @@ int main(int argc, char** argv) {
         std::stringstream ss(a.substr(7));
         std::string chord;
         while (std::getline(ss, chord, ';')) {
-            std::vector<int> held;
+            // a key is pitch or pitch:velocity
+            std::vector<LiveKey> held;
             std::stringstream cs(chord);
             std::string x;
-            while (std::getline(cs, x, ',')) held.push_back(std::stoi(x));
-            auto r = lv.voice(held, ls, true);
+            while (std::getline(cs, x, ',')) {
+                auto col = x.find(':');
+                held.push_back({std::stoi(x.substr(0, col)), col == std::string::npos ? 90 : std::stoi(x.substr(col + 1))});
+            }
+            auto r = lv.voice(held, ls, true, 0);
             std::cout << r.chord << ":";
-            for (size_t k = 0; k < r.pitches.size(); ++k) std::cout << " " << r.names[k] << "=" << r.pitches[k];
+            for (size_t k = 0; k < r.pitches.size(); ++k)
+                std::cout << " " << r.names[k] << "=" << r.pitches[k] << "/" << r.velocities[k];
             std::cout << "\n";
         }
         return 0;

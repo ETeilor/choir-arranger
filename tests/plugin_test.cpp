@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
         expect(p.loadMidiFile(mel, e3) && p.result().harmonized && p.result().parts.size() == 4,
                "мелодия гармонизована: " + juce::String((int)p.result().chords.size()) + " аккордов " + e3);
         std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
-        ed->setSize(1120, 740);
+        ed->setSize(1120, 720);
         pump(100);
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
         auto out = outDir.getChildFile("ui_harmonized.png");
@@ -183,6 +183,107 @@ int main(int argc, char** argv) {
         juce::PNGImageFormat().writeImageToStream(img, os);
         ed.reset();
         expect(p.loadMidiFile(input, e3), "вход возвращён");
+    }
+
+    // 5e. no state carried between styles: after any walk through the styles the result equals a fresh arrangement
+    {
+        juce::String e4;
+        auto minorEnd = outDir.getChildFile("minor_end.mid");
+        if (minorEnd.existsAsFile() && p.loadMidiFile(minorEnd, e4)) {
+            auto setP = [&](const char* id, float v) {
+                auto* prm = p.params.getParameter(id);
+                prm->setValueNotifyingHost(prm->convertTo0to1(v));
+                pump(120);
+            };
+            setP("complexity", 8);
+            int bad = 0;
+            const int walk[] = {20, 0, 20, 1, 20, 6, 20, 7, 20, 9, 20, 2, 20, 12, 0, 5};
+            for (int st : walk) {
+                setP("style", (float)st);
+                auto fresh = choir::arrange(p.input(), p.meta(), p.settingsForTest());
+                bool same = fresh.parts.size() == p.result().parts.size();
+                for (size_t i = 0; same && i < fresh.parts.size(); ++i) {
+                    same = fresh.parts[i].notes.size() == p.result().parts[i].notes.size();
+                    for (size_t k = 0; same && k < fresh.parts[i].notes.size(); ++k)
+                        same = fresh.parts[i].notes[k].pitch == p.result().parts[i].notes[k].pitch;
+                }
+                if (!same) ++bad;
+                // minor final chord stays minor everywhere except where the style asks for a major one
+                std::set<int> pcs;
+                int end = 0;
+                for (auto& pt : p.result().parts) for (auto& n : pt.notes) end = std::max(end, n.end);
+                for (auto& pt : p.result().parts) for (auto& n : pt.notes) if (n.end == end) pcs.insert(n.pitch % 12);
+                std::cout << "    style " << st << " final pcs:";
+                for (int x : pcs) std::cout << " " << x;
+                std::cout << "\n";
+            }
+            expect(bad == 0, "стили не переносят состояние друг другу, расхождений " + juce::String(bad));
+            setP("complexity", 4);
+            setP("style", 0);
+            expect(p.loadMidiFile(input, e4), "вход возвращён");
+        }
+    }
+
+    // 5f. saved variants, refresh, paste
+    {
+        auto setP = [&](const char* id, float v) {
+            auto* prm = p.params.getParameter(id);
+            prm->setValueNotifyingHost(prm->convertTo0to1(v));
+            pump(120);
+        };
+        setP("style", 0);
+        setP("variant", 0);
+        setP("complexity", 4);
+        p.saveSlot();                                  // slot 1: the main variant at 4
+        p.stepVariant(+1);
+        pump(150);
+        setP("complexity", 7);
+        auto second = p.result();
+        p.saveSlot();                                  // slot 2: another variant at 7
+        expect(p.numSlots() == 2 && p.currentSlot() == 1, "варианты запомнены: " + juce::String(p.numSlots()));
+        p.loadSlot(0);
+        pump(200);
+        expect(p.currentSlot() == 0 && (int)*p.params.getRawParameterValue("complexity") == 4 &&
+                   (int)*p.params.getRawParameterValue("variant") == 0, "возврат к первому запомненному варианту");
+        p.loadSlot(1);
+        pump(200);
+        bool sameAsSaved = p.result().parts.size() == second.parts.size();
+        for (size_t i = 0; sameAsSaved && i < second.parts.size(); ++i) {
+            sameAsSaved = second.parts[i].notes.size() == p.result().parts[i].notes.size();
+            for (size_t k = 0; sameAsSaved && k < second.parts[i].notes.size(); ++k)
+                sameAsSaved = second.parts[i].notes[k].pitch == p.result().parts[i].notes[k].pitch;
+        }
+        expect(sameAsSaved, "второй запомненный вариант звучит как при сохранении");
+        // each style keeps its own variant
+        int varBach = (int)*p.params.getRawParameterValue("variant");
+        setP("style", 7);
+        expect((int)*p.params.getRawParameterValue("variant") == 0 && p.numSlots() == 0, "в новом стиле основной вариант и свои слоты");
+        setP("style", 0);
+        expect((int)*p.params.getRawParameterValue("variant") == varBach && p.numSlots() == 2, "стиль помнит свой вариант");
+        // state round trip keeps the slots
+        juce::MemoryBlock st2;
+        p.getStateInformation(st2);
+        ChoirProcessor q;
+        q.setStateInformation(st2.getData(), (int)st2.getSize());
+        pump(300);
+        expect(q.numSlots() == 2, "слоты сохраняются в проекте");
+        // refresh: locks off, main variant
+        p.toggleLock("Bass");
+        p.refreshAll();
+        pump(200);
+        expect(!p.isLocked("Bass") && (int)*p.params.getRawParameterValue("variant") == 0, "«Обновить» снимает закрепления и возвращает основной вариант");
+        p.removeSlot(1);
+        p.removeSlot(0);
+        setP("complexity", 4);
+        // paste: on this platform the clipboard holds a path to a MIDI file
+        auto mel = input.getParentDirectory().getParentDirectory().getChildFile("melodies").getChildFile("folk.mid");
+        juce::SystemClipboard::copyTextToClipboard(mel.getFullPathName());
+        juce::String msg;
+        bool pasted = p.pasteFromClipboard(msg);
+        if (juce::SystemClipboard::getTextFromClipboard() == mel.getFullPathName())
+            expect(pasted && p.inputSource().isNotEmpty() && p.result().harmonized, "вставка из буфера: " + msg);
+        juce::String e5;
+        expect(p.loadMidiFile(input, e5), "вход возвращён");
     }
 
     // 5d. live MIDI FX
@@ -216,6 +317,66 @@ int main(int argc, char** argv) {
         std::set<int> chans;
         for (const auto x : ch) if (x.getMessage().isNoteOn()) chans.insert(x.getMessage().getChannel());
         expect(chans.size() == 4, "живой режим: каждый голос в своём канале");
+        // velocities: a hard bass in octaves under a soft right hand
+        play({}, {48, 52, 55, 72});
+        juce::MidiBuffer hard;
+        hard.addEvent(juce::MidiMessage::noteOn(1, 36, (juce::uint8)120), 0);
+        hard.addEvent(juce::MidiMessage::noteOn(1, 48, (juce::uint8)118), 1);
+        hard.addEvent(juce::MidiMessage::noteOn(1, 64, (juce::uint8)40), 2);
+        hard.addEvent(juce::MidiMessage::noteOn(1, 72, (juce::uint8)45), 3);
+        lp.processBlock(none, hard);
+        juce::MidiBuffer hard2;
+        lp.processBlock(none, hard2);
+        int loudLow = 0, softHigh = 0, voices = 0;
+        for (const auto x : hard2) {
+            auto m = x.getMessage();
+            if (!m.isNoteOn()) continue;
+            ++voices;
+            if (m.getNoteNumber() < 52 && m.getVelocity() > 100) ++loudLow;
+            if (m.getNoteNumber() > 62 && m.getVelocity() < 60) ++softHigh;
+        }
+        expect(voices == 5 && loudLow >= 2 && softHigh >= 1, "живой режим: сила нажатия по голосам, бас удвоен, голосов " + juce::String(voices));
+        // legato: the next chord lands while the old keys are still down
+        juce::MidiBuffer leg;
+        for (int k : {41, 53, 57, 60}) leg.addEvent(juce::MidiMessage::noteOn(1, k, (juce::uint8)90), 0);
+        lp.processBlock(none, leg);
+        juce::MidiBuffer leg2;
+        lp.processBlock(none, leg2);
+        expect(lp.snapshot().chord == "F", "живой режим: легато-смена аккорда читает новый аккорд, получился " +
+                                               juce::String(lp.snapshot().chord));
+        juce::MidiBuffer rel;
+        for (int k : {36, 48, 64, 72}) rel.addEvent(juce::MidiMessage::noteOff(1, k), 0);
+        lp.processBlock(none, rel);
+        juce::MidiBuffer rel2;
+        lp.processBlock(none, rel2);
+        expect(lp.snapshot().chord == "F" && count(rel2, true) == 0, "живой режим: отпускание старых клавиш ничего не меняет");
+        // inversion by re-fingering: the bass moves to the third, the chord stays
+        juce::MidiBuffer inv;
+        inv.addEvent(juce::MidiMessage::noteOff(1, 41), 0);
+        inv.addEvent(juce::MidiMessage::noteOff(1, 53), 0);
+        inv.addEvent(juce::MidiMessage::noteOn(1, 45, (juce::uint8)90), 400);
+        lp.processBlock(none, inv);
+        juce::MidiBuffer inv2, inv3;
+        lp.processBlock(none, inv2);
+        lp.processBlock(none, inv3);
+        expect(lp.snapshot().chord == "F/A", "живой режим: обращение сохраняет аккорд, получился " + juce::String(lp.snapshot().chord));
+        // the take goes out as a MIDI file with one track per part
+        auto takeFile = lp.writeRecordingFile();
+        std::vector<choir::Note> tn;
+        choir::Meta tm;
+        std::string te;
+        expect(takeFile.existsAsFile() && choir::readSmf(takeFile.getFullPathName().toStdString(), tn, tm, te) && tn.size() >= 8 &&
+                   lp.recordedChords() >= 3,
+               "живой режим: сыгранное выгружается в MIDI, нот " + juce::String((int)tn.size()));
+        lp.params.getParameter("register")->setValueNotifyingHost(0.5f);
+        play({}, {45, 57, 60});
+        auto low = play({48, 52, 55, 72}, {});
+        int lowest = 127;
+        for (const auto x : low) if (x.getMessage().isNoteOn()) lowest = std::min(lowest, x.getMessage().getNoteNumber());
+        expect(lowest == 36, "живой режим: регистр на октаву ниже, бас " + juce::String(lowest));
+        lp.params.getParameter("register")->setValueNotifyingHost(0.0f);
+        play({}, {48, 52, 55, 72});
+        play({48, 55, 60, 64, 71}, {});
         std::unique_ptr<juce::AudioProcessorEditor> ed(lp.createEditor());
         pump(100);
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
@@ -243,7 +404,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 300; ++i) p.processBlock(buf, mo);
         }
         std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
-        ed->setSize(1120, 740);
+        ed->setSize(1120, 720);
         pump(100);
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
         auto out = outDir.getChildFile(juce::String("ui_") + tags[st] + ".png");
@@ -255,7 +416,7 @@ int main(int argc, char** argv) {
     }
     ChoirProcessor empty;
     std::unique_ptr<juce::AudioProcessorEditor> ed(empty.createEditor());
-    ed->setSize(1120, 740);
+    ed->setSize(1120, 720);
     pump(100);
     auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f);
     auto out = outDir.getChildFile("ui_empty.png");

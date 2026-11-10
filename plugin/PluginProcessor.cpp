@@ -144,7 +144,11 @@ choir::Style styleFromIndex(int i) {
 }
 
 const char* PARAM_IDS[] = {"style", "complexity", "voiceS", "voiceA", "voiceT", "voiceB",
-                           "octavists", "texture", "outofmode", "mixed", "choir", "amateur", "input", "variant"};
+                           "octavists", "texture", "outofmode", "mixed", "choir", "amateur", "input", "variant",
+                           "majorfinal"};
+// what a saved variant remembers (everything that shapes the arrangement inside a style)
+const char* SLOT_IDS[] = {"complexity", "voiceS", "voiceA", "voiceT", "voiceB", "octavists", "texture", "outofmode",
+                          "mixed", "choir", "amateur", "variant", "majorfinal"};
 
 }  // namespace
 
@@ -174,6 +178,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChoirProcessor::layout() {
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"input", 1}, "Input",
                                                  StringArray{U("Авто"), U("Аккорды"), U("Гармонизовать мелодию")}, 0));
     l.add(std::make_unique<AudioParameterInt>(ParameterID{"variant", 1}, "Variant", 0, 9999, 0));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{"majorfinal", 1}, "Major final chord", true));
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{"sound", 1}, "Preview sound",
                                                  StringArray{U("Пианино"), U("Хор")}, 0));
     return l;
@@ -223,6 +228,84 @@ void ChoirProcessor::parameterChanged(const juce::String& id, float) {
         return;
     }
     triggerAsyncUpdate();
+}
+
+// ---------------------------------------------------------------- refresh, saved variants, clipboard
+int ChoirProcessor::styleIndex() const { return (int)*params.getRawParameterValue("style"); }
+
+void ChoirProcessor::refreshAll() {
+    setPreview(false);
+    locks_.clear();
+    variantByStyle_.clear();
+    juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ChoirArranger").deleteRecursively();
+    auto* p = params.getParameter("variant");
+    p->setValueNotifyingHost(p->convertTo0to1(0.0f));
+    regenerate();
+}
+
+ChoirProcessor::Slot ChoirProcessor::snapshot() const {
+    Slot s;
+    for (auto* id : SLOT_IDS) s[id] = params.getRawParameterValue(id)->load();
+    return s;
+}
+
+int ChoirProcessor::numSlots() const {
+    auto it = slots_.find(styleIndex());
+    return it == slots_.end() ? 0 : (int)it->second.size();
+}
+
+int ChoirProcessor::currentSlot() const {
+    auto it = slots_.find(styleIndex());
+    if (it == slots_.end()) return -1;
+    auto now = snapshot();
+    for (size_t i = 0; i < it->second.size(); ++i)
+        if (it->second[i] == now) return (int)i;
+    return -1;
+}
+
+void ChoirProcessor::saveSlot() {
+    if (currentSlot() >= 0) return;
+    auto& v = slots_[styleIndex()];
+    if (v.size() >= 8) v.erase(v.begin());
+    v.push_back(snapshot());
+    if (onResultChanged) onResultChanged();
+}
+
+void ChoirProcessor::loadSlot(int index) {
+    auto it = slots_.find(styleIndex());
+    if (it == slots_.end() || index < 0 || index >= (int)it->second.size()) return;
+    Slot s = it->second[(size_t)index];
+    for (auto& kv : s) {
+        auto* p = params.getParameter(kv.first);
+        if (p) p->setValueNotifyingHost(p->convertTo0to1(kv.second));
+    }
+}
+
+void ChoirProcessor::removeSlot(int index) {
+    auto it = slots_.find(styleIndex());
+    if (it == slots_.end() || index < 0 || index >= (int)it->second.size()) return;
+    it->second.erase(it->second.begin() + index);
+    if (onResultChanged) onResultChanged();
+}
+
+bool choirReadMidiFromClipboard(juce::MemoryBlock& midi, juce::String& report);   // Clipboard_mac.mm / Clipboard.cpp
+
+bool ChoirProcessor::pasteFromClipboard(juce::String& message) {
+    juce::MemoryBlock midi;
+    juce::String report;
+    if (!choirReadMidiFromClipboard(midi, report)) {
+        auto f = juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile("Choir Arranger paste report.txt");
+        f.replaceWithText(report);
+        message = U("В буфере обмена нет MIDI, который плагин может прочитать.\n\n") + report.substring(0, 700) +
+                  U("\n\nОтчёт сохранён на рабочий стол: «Choir Arranger paste report.txt».");
+        return false;
+    }
+    juce::String err;
+    if (!loadMidiBytes(midi.getData(), midi.getSize(), U("буфер обмена"), err)) {
+        message = err;
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------- locks and variants
@@ -286,6 +369,7 @@ choir::Settings ChoirProcessor::currentSettings() const {
     int in = (int)*params.getRawParameterValue("input");
     s.input = in == 1 ? choir::InputMode::Chords : in == 2 ? choir::InputMode::HarmonizeMelody : choir::InputMode::Auto;
     s.variant = (int)*params.getRawParameterValue("variant");
+    s.majorFinal = *params.getRawParameterValue("majorfinal") > 0.5f;
     s.locks = locks_;
     return s;
 }
@@ -297,7 +381,11 @@ bool ChoirProcessor::loadMidiFile(const juce::File& f, juce::String& err) {
         err = U("не удалось прочитать файл");
         return false;
     }
-    std::vector<unsigned char> bytes((const unsigned char*)mb.getData(), (const unsigned char*)mb.getData() + mb.getSize());
+    return loadMidiBytes(mb.getData(), mb.getSize(), f.getFileName(), err);
+}
+
+bool ChoirProcessor::loadMidiBytes(const void* data, size_t size, const juce::String& source, juce::String& err) {
+    std::vector<unsigned char> bytes((const unsigned char*)data, (const unsigned char*)data + size);
     if (!isMidiData(bytes)) {
         err = U("это не MIDI-файл");
         return false;
@@ -313,7 +401,7 @@ bool ChoirProcessor::loadMidiFile(const juce::File& f, juce::String& err) {
         err = U("в файле нет нот");
         return false;
     }
-    setInput(std::move(notes), meta, f.getFileName());
+    setInput(std::move(notes), meta, source);
     return true;
 }
 
@@ -332,6 +420,19 @@ void ChoirProcessor::regenerate() {
               (int)*params.getRawParameterValue("input");
     if (lockKey_ >= 0 && key != lockKey_) locks_.clear();
     lockKey_ = key;
+    // each style keeps its own variant: coming back to a style returns to the variant left there
+    int style = styleIndex();
+    if (lastStyle_ >= 0 && style != lastStyle_) {
+        int cur = (int)*params.getRawParameterValue("variant");
+        variantByStyle_[lastStyle_] = cur;
+        int want = variantByStyle_.count(style) ? variantByStyle_[style] : 0;
+        lastStyle_ = style;
+        if (want != cur) {
+            auto* p = params.getParameter("variant");
+            p->setValueNotifyingHost(p->convertTo0to1((float)want));   // comes back here through the listener
+        }
+    }
+    lastStyle_ = style;
     if (input_.empty()) {
         result_ = choir::Result();
     } else {
@@ -342,7 +443,9 @@ void ChoirProcessor::regenerate() {
 }
 
 juce::File ChoirProcessor::writePartFile(int idx) const {
-    auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ChoirArranger");
+    // a new folder for every drag: a host that remembers a file by its path never gets an old arrangement
+    auto base = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ChoirArranger");
+    auto dir = base.getChildFile("drag" + juce::String(juce::Time::currentTimeMillis()) + "_" + juce::String(++dragCounter_));
     dir.createDirectory();
     std::vector<choir::Part> parts;
     juce::String name;
@@ -555,6 +658,13 @@ void ChoirProcessor::getStateInformation(juce::MemoryBlock& dest) {
         for (auto& n : kv.second) ns << n.start << ' ' << n.end << ' ' << n.pitch << ';';
         e->setAttribute("notes", ns);
     }
+    auto* sl = xml->createNewChildElement("Slots");
+    for (auto& kv : slots_)
+        for (auto& slot : kv.second) {
+            auto* e = sl->createNewChildElement("Slot");
+            e->setAttribute("style", kv.first);
+            for (auto& v : slot) e->setAttribute(v.first, (double)v.second);
+        }
     copyXmlToBinary(*xml, dest);
 }
 
@@ -588,6 +698,15 @@ void ChoirProcessor::setStateInformation(const void* data, int size) {
             locks_[e->getStringAttribute("part").toStdString()] = ns;
         }
     lockKey_ = -1;   // the restored parameters may arrive after this: keep the restored locks
+    lastStyle_ = -1;
+    slots_.clear();
+    if (auto* sl = xml->getChildByName("Slots"))
+        for (auto* e : sl->getChildIterator()) {
+            Slot slot;
+            for (auto* id : SLOT_IDS)
+                if (e->hasAttribute(id)) slot[id] = (float)e->getDoubleAttribute(id);
+            if (slot.size() == (size_t)std::size(SLOT_IDS)) slots_[e->getIntAttribute("style")].push_back(slot);
+        }
     triggerAsyncUpdate();   // the host may call this off the message thread
 }
 
